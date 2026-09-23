@@ -2,6 +2,7 @@ import psutil
 
 from applications import open_application, close_application
 from files import list_files, search_file, open_path
+from browser import open_url, search_web
 
 
 def get_system_status() -> str:
@@ -32,6 +33,9 @@ AVAILABLE_FUNCTIONS = {
     "list_files": list_files,
     "search_file": search_file,
     "open_path": open_path,
+
+    "open_url": open_url,
+    "search_web": search_web,
 }
 
 
@@ -44,4 +48,7 @@ TOOLS = [
     list_files,
     search_file,
     open_path,
+
+    open_url,
+    search_web,
 ]

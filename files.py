@@ -23,7 +23,9 @@ def list_files(folder: str) -> str:
         if not items:
             return f"The folder '{folder}' is empty."
 
-        result = []
+        result = [
+            f"Contents of: {path.resolve()}"
+        ]
 
         for item in items:
             if item.is_dir():
@@ -65,7 +67,10 @@ def search_file(filename: str, folder: str = ".") -> str:
     if not matches:
         return f"I couldn't find '{filename}'."
 
-    return "\n".join(matches)
+    return (
+        f"Search results for '{filename}':\n"
+        + "\n".join(matches)
+    )
 
 
 def open_path(path: str) -> str:
@@ -80,7 +85,8 @@ def open_path(path: str) -> str:
 
     try:
         os.startfile(path)
-        return f"Opened '{path}'."
+
+        return f"Opened path: {os.path.abspath(path)}"
 
     except Exception as e:
         return f"Failed to open '{path}': {e}"

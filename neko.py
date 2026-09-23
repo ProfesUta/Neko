@@ -1,7 +1,9 @@
 from config import SYSTEM_PROMPT
 import memory
 from chat import chat
+from context import Context
 
+context = Context()
 
 # ==================================================
 # MEMORY
@@ -31,6 +33,21 @@ These are facts that the user previously asked you to remember:
 
 Use these memories naturally when relevant.
 Do not mention the memory system unless the user asks about it.
+
+SHORT-TERM CONTEXT:
+
+{context.get_text()}
+
+Use this context to understand references such as:
+- "it"
+- "that"
+- "this"
+- "there"
+- "the app"
+- "the folder"
+- "the website"
+
+If the reference is ambiguous, ask the user instead of guessing.
 """
 
 
@@ -162,7 +179,7 @@ while True:
     })
 
 
-    answer = chat(messages)
+    answer = chat(messages, context)
 
 
     print("Neko:", answer)

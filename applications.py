@@ -31,7 +31,7 @@ def open_application(name: str) -> str:
             shell=False
         )
 
-        return f"Opened {name}."
+        return f"Opened application: {name}"
 
     except Exception as e:
         return f"Failed to open {name}: {e}"
@@ -54,18 +54,19 @@ def close_application(name: str) -> str:
 
     try:
         if name == "calculator":
-            result = subprocess.run(
+            subprocess.run(
                 [
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    "Get-Process CalculatorApp -ErrorAction SilentlyContinue | Stop-Process"
+                    "Get-Process CalculatorApp "
+                    "-ErrorAction SilentlyContinue | Stop-Process"
                 ],
                 capture_output=True,
                 text=True
             )
 
-            return "Closed calculator."
+            return "Closed application: calculator"
 
         executable = APPLICATIONS[name]
 
@@ -76,7 +77,7 @@ def close_application(name: str) -> str:
         )
 
         if result.returncode == 0:
-            return f"Closed {name}."
+            return f"Closed application: {name}"
 
         return f"{name} does not appear to be running."
 
