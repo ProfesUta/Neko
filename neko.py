@@ -128,28 +128,26 @@ while True:
     # REMEMBER
     # ----------------------------------------------
 
-    if user.lower().startswith("/remember "):
 
+    if user.lower().startswith("/remember "):
         new_memory = user[10:].strip()
 
-
         if new_memory:
+            result = memory.save_memory(new_memory)
 
-            memory.save_memory(new_memory)
-
-            print(
-                "Neko: Hmph... fine. I'll remember that."
-            )
-
+            if result.startswith("Remembered:"):
+                print("Neko: Hmph... fine. I'll remember that.")
+            elif result.startswith("That memory already exists:"):
+                print("Neko: I already remember that, baka.")
+            else:
+                print("Neko:", result)
         else:
-
-            print(
-                "Neko: Remember WHAT, baka?"
-            )
+            print("Neko: Remember WHAT, baka?")
 
         print()
-
         continue
+
+
 
 
     # ----------------------------------------------

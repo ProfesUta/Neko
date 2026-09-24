@@ -3,13 +3,10 @@ import psutil
 from applications import open_application, close_application
 from files import list_files, search_file, open_path
 from browser import open_url, search_web
+from memory import remember_fact, search_memories
 
 
 def get_system_status() -> str:
-    """
-    Get current CPU and RAM usage.
-    """
-
     cpu = psutil.cpu_percent(interval=1)
 
     memory = psutil.virtual_memory()
@@ -26,29 +23,27 @@ def get_system_status() -> str:
 
 AVAILABLE_FUNCTIONS = {
     "get_system_status": get_system_status,
-
     "open_application": open_application,
     "close_application": close_application,
-
     "list_files": list_files,
     "search_file": search_file,
     "open_path": open_path,
-
     "open_url": open_url,
     "search_web": search_web,
+    "remember_fact": remember_fact,
+    "search_memories": search_memories,
 }
 
 
 TOOLS = [
     get_system_status,
-
     open_application,
     close_application,
-
     list_files,
     search_file,
     open_path,
-
     open_url,
     search_web,
+    remember_fact,
+    search_memories,
 ]
