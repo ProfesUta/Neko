@@ -1,7 +1,7 @@
 from config import SYSTEM_PROMPT
-import memory
-from chat import chat
-from context import Context
+from core.chat import chat
+from core.context import Context
+from memory import database as memory
 
 context = Context()
 

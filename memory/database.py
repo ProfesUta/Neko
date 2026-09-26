@@ -1,6 +1,15 @@
 import sqlite3
+from pathlib import Path
 
-DATABASE = "memory.db"
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+
+DATA_DIR.mkdir(exist_ok=True)
+
+DATABASE = DATA_DIR / "memory.db"
+
+
 
 db = sqlite3.connect(DATABASE)
 cursor = db.cursor()
