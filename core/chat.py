@@ -4,7 +4,7 @@ from config import MODEL
 from tools.registry import TOOLS, AVAILABLE_FUNCTIONS
 from core.memory_detector import detect_memory
 from memory.database import remember_fact
-from tts import speak
+from voice.tts import speak
 
 
 def update_context(context, function_name, arguments, result):

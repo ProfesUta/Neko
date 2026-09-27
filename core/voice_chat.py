@@ -1,5 +1,5 @@
 from core.chat import chat
-from voice import record_until_silence, transcribe_audio
+from voice.voice import record_until_silence, transcribe_audio
 
 
 def voice_chat(messages, context):

@@ -1,9 +1,17 @@
 import os
+import warnings
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 import torch
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    module=r"torch\.jit\._serialization"
+)
+
 from silero_vad import load_silero_vad, VADIterator
 from faster_whisper import WhisperModel
 
@@ -235,6 +243,7 @@ def transcribe_audio(audio):
 
     segments, info = whisper_model.transcribe(
         audio,
+        language="en",
         beam_size=5
     )
 
