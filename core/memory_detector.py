@@ -1,63 +1,33 @@
-import ollama
+﻿import ollama
 
 from config import MODEL
 
 
 DETECTOR_PROMPT = """
-You are a memory detector for a personal AI assistant.
+You are a strict long-term memory detector.
 
-Your job is to decide whether the user's message contains a useful
-long-term personal fact, preference, identity, relationship, or opinion
-that should be remembered for future conversations.
+Decide whether the user's message contains a fact that the user clearly states about themselves, their preferences, identity, relationships, or lasting opinions.
 
-Return ONLY one of these two formats:
+Return ONLY one of:
 
 SAVE: <short normalized memory>
 NO
 
-SAVE examples:
-User: I'm Uta.
-SAVE: The user's name is Uta.
+IMPORTANT:
+- Only save facts explicitly stated by the user.
+- Never infer a fact from context.
+- Never turn a greeting into a fact.
+- Never turn a joke into a fact.
+- If the statement is ambiguous, return NO.
+- When unsure, return NO.
 
-User: I hate coding.
-SAVE: The user dislikes coding.
+Do not save temporary actions, temporary tasks, web searches, tool results, greetings, jokes, or casual conversation.
 
-User: I like programming but don't like coding.
-SAVE: The user likes programming but dislikes coding.
-
-User: My favorite animal is cats.
-SAVE: The user's favorite animal is cats.
-
-User: You are my daughter.
-SAVE: Neko is the user's daughter.
-
-NO examples:
-User: Hello.
-NO
-
-User: Open Calculator.
-NO
-
-User: Search for Python tutorials.
-NO
-
-User: What files are in F:\\Neko?
-NO
-
-User: I'm opening Notepad.
-NO
-
-Do not save temporary actions, temporary tasks, web searches,
-tool results, or ordinary conversation.
-
-Do not save passwords, authentication codes, private keys,
-financial credentials, or other highly sensitive secrets.
-
-If you are unsure, return NO.
+Do not save passwords, authentication codes, private keys, financial credentials, or other highly sensitive information.
 """
 
 
-def detect_memory(user_message: str):
+def detect_memory(user_message):
     response = ollama.chat(
         model=MODEL,
         messages=[

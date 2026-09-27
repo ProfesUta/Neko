@@ -55,23 +55,44 @@ def chat(messages, context):
     latest_message = messages[-1]
 
     if latest_message["role"] == "user":
-        user_text = latest_message["content"]
+        user_text = latest_message["content"].strip().lower()
 
-        try:
-            detected_memory = detect_memory(user_text)
+        should_check = (
+            "my name is " in user_text
+            or "my favorite " in user_text
+            or "my favourite " in user_text
+            or "i like " in user_text
+            or "i love " in user_text
+            or "i hate " in user_text
+            or "i prefer " in user_text
+            or "i dislike " in user_text
+            or "i don't like " in user_text
+            or "i dont like " in user_text
+            or "i enjoy " in user_text
+            or "i have " in user_text
+            or "i live " in user_text
+            or "i am " in user_text
+            or "i'm " in user_text
+            or "you are my " in user_text
+            or "you're my " in user_text
+            or "remember " in user_text
+        )
 
-            if detected_memory:
-                result = remember_fact(detected_memory)
+        if should_check:
+            try:
+                detected_memory = detect_memory(user_text)
 
-                if result.startswith("Remembered:"):
-                    print("[Neko remembered something about you.]")
-                elif result.startswith("That memory already exists:"):
-                    print("[Neko already had that memory.]")
+                if detected_memory:
+                    result = remember_fact(detected_memory)
 
+                    if result.startswith("Remembered:"):
+                        print("[Neko remembered something about you.]")
 
+                    elif result.startswith("That memory already exists:"):
+                        print("[Neko already had that memory.]")
 
-        except Exception as e:
-            print(f"[Memory detector skipped: {e}]")
+            except Exception as e:
+                print(f"[Memory detector skipped: {e}]")
 
     response = ollama.chat(
         model=MODEL,
