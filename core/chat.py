@@ -4,19 +4,17 @@ from config import MODEL
 from tools.registry import TOOLS, AVAILABLE_FUNCTIONS
 from core.memory_detector import detect_memory
 from memory.database import remember_fact
-
+from tts import speak
 
 
 def update_context(context, function_name, arguments, result):
     if function_name in ["open_application", "close_application"]:
         name = arguments.get("name")
-
         if name:
             context.set_application(name)
 
     elif function_name == "list_files":
         folder = arguments.get("folder")
-
         if folder:
             context.set_folder(folder)
 
@@ -32,26 +30,21 @@ def update_context(context, function_name, arguments, result):
 
     elif function_name == "open_path":
         path = arguments.get("path")
-
         if path:
             context.set_folder(path)
 
     elif function_name == "open_url":
         url = arguments.get("url")
-
         if url:
             context.set_url(url)
 
     elif function_name == "search_web":
         query = arguments.get("query")
-
         if query:
             context.set_search(query)
 
 
 def chat(messages, context):
-    # Check whether the user's latest message contains
-    # a useful long-term memory.
     latest_message = messages[-1]
 
     if latest_message["role"] == "user":
@@ -107,9 +100,7 @@ def chat(messages, context):
             function_name = call.function.name
             arguments = call.function.arguments
 
-
             if function_name in AVAILABLE_FUNCTIONS:
-
                 if function_name in ["remember_fact", "search_memories"]:
                     print("[Neko is checking her memories...]")
                 else:
@@ -138,6 +129,16 @@ def chat(messages, context):
 
         messages.append(final_response.message)
 
-        return final_response.message.content
+        answer = final_response.message.content
 
-    return response.message.content
+        print("[DEBUG] Sending response to Piper...")
+        speak(answer)
+        print("[DEBUG] Piper finished speaking.")
+        
+        return answer
+
+    answer = response.message.content
+
+    speak(answer)
+
+    return answer

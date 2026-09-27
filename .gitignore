@@ -6,6 +6,7 @@ Thumbs.db
 *.swo
 
 data/memory.db
+test_voice.wav
 
 .env
 .env.*

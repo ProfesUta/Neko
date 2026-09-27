@@ -1,25 +1,17 @@
 from config import SYSTEM_PROMPT
 from core.chat import chat
 from core.context import Context
+from core.voice_chat import voice_chat
 from memory import database as memory
+
 
 context = Context()
 
-# ==================================================
-# MEMORY
-# ==================================================
-
 memories = memory.get_memories()
 
-
 if memories:
-
-    memory_text = "\n".join(
-        f"- {item}" for item in memories
-    )
-
+    memory_text = "\n".join(f"- {item}" for item in memories)
 else:
-
     memory_text = "No long-term memories yet."
 
 
@@ -59,75 +51,44 @@ messages = [
 ]
 
 
-# ==================================================
-# START
-# ==================================================
-
 print("🐱 Neko is ready!")
 print()
-
 print("Commands:")
 print("  /memory  - show saved memories")
 print("  /remember <text> - save a memory")
 print("  /forget  - delete all memories")
+print("  /voice   - talk to Neko using your microphone")
 print("  /exit    - quit")
 print()
 
 
-# ==================================================
-# MAIN LOOP
-# ==================================================
-
 while True:
-
     user = input("You: ").strip()
-
 
     if not user:
         continue
 
-
-    # ----------------------------------------------
-    # EXIT
-    # ----------------------------------------------
-
     if user.lower() == "/exit":
-
         print("Neko: Hmph. Leaving already?")
-
         break
 
-
-    # ----------------------------------------------
-    # MEMORY
-    # ----------------------------------------------
+    if user.lower() == "/voice":
+        voice_chat(messages, context)
+        continue
 
     if user.lower() == "/memory":
-
         memories = memory.get_memories()
 
-
         if not memories:
-
             print("Neko: I don't remember anything yet.")
-
         else:
-
             print("Neko remembers:")
 
             for item in memories:
-
                 print(" -", item)
 
         print()
-
         continue
-
-
-    # ----------------------------------------------
-    # REMEMBER
-    # ----------------------------------------------
-
 
     if user.lower().startswith("/remember "):
         new_memory = user[10:].strip()
@@ -137,8 +98,10 @@ while True:
 
             if result.startswith("Remembered:"):
                 print("Neko: Hmph... fine. I'll remember that.")
+
             elif result.startswith("That memory already exists:"):
                 print("Neko: I already remember that, baka.")
+
             else:
                 print("Neko:", result)
         else:
@@ -147,38 +110,18 @@ while True:
         print()
         continue
 
-
-
-
-    # ----------------------------------------------
-    # FORGET
-    # ----------------------------------------------
-
     if user.lower() == "/forget":
-
         memory.delete_all_memories()
-
-        print(
-            "Neko: Fine! I forgot everything. Hmph."
-        )
-
+        print("Neko: Fine! I forgot everything. Hmph.")
         print()
-
         continue
-
-
-    # ----------------------------------------------
-    # CHAT
-    # ----------------------------------------------
 
     messages.append({
         "role": "user",
         "content": user
     })
 
-
     answer = chat(messages, context)
-
 
     print("Neko:", answer)
     print()
