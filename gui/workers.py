@@ -14,16 +14,28 @@ class ChatWorker(QThread):
     def run(self):
         try:
             from core.chat import chat
+            from voice.tts import speak
 
             answer = chat(
                 self.messages,
-                self.context
+                self.context,
+                speak_response=False
             )
 
-            self.response_ready.emit(answer)
+            # Show text first.
+
+            self.response_ready.emit(
+                answer
+            )
+
+            # Then speak.
+
+            speak(answer)
 
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(
+                str(e)
+            )
 
 
 class VoiceWorker(QThread):
@@ -42,6 +54,7 @@ class VoiceWorker(QThread):
 
     def stop(self):
         self.running = False
+        self.requestInterruption()
 
     def run(self):
         try:
@@ -51,12 +64,17 @@ class VoiceWorker(QThread):
             )
 
             from core.chat import chat
+            from voice.tts import speak
+
+            # ==================================================
+            # CONTINUOUS VOICE LOOP
+            # ==================================================
 
             while self.running:
 
-                # ------------------------------
+                # --------------------------------------------------
                 # LISTEN
-                # ------------------------------
+                # --------------------------------------------------
 
                 self.status_changed.emit(
                     "🎤 Listening..."
@@ -70,32 +88,41 @@ class VoiceWorker(QThread):
                 if audio is None:
                     continue
 
-                # ------------------------------
+                # --------------------------------------------------
                 # TRANSCRIBE
-                # ------------------------------
+                # --------------------------------------------------
 
                 self.status_changed.emit(
                     "📝 Transcribing..."
                 )
 
-                text = transcribe_audio(audio)
+                text = transcribe_audio(
+                    audio
+                )
 
                 if not self.running:
                     break
 
                 if not text:
+                    self.status_changed.emit(
+                        "I didn't understand that"
+                    )
                     continue
 
-                self.transcription_ready.emit(text)
+                # Show what the user said.
+
+                self.transcription_ready.emit(
+                    text
+                )
 
                 self.messages.append({
                     "role": "user",
                     "content": text
                 })
 
-                # ------------------------------
+                # --------------------------------------------------
                 # THINK
-                # ------------------------------
+                # --------------------------------------------------
 
                 self.status_changed.emit(
                     "🧠 Thinking..."
@@ -103,24 +130,47 @@ class VoiceWorker(QThread):
 
                 answer = chat(
                     self.messages,
-                    self.context
+                    self.context,
+                    speak_response=False
                 )
 
                 if not self.running:
                     break
 
-                self.response_ready.emit(answer)
+                # --------------------------------------------------
+                # SHOW TEXT FIRST
+                # --------------------------------------------------
 
-                # ------------------------------
-                # LISTEN AGAIN
-                # ------------------------------
+                self.response_ready.emit(
+                    answer
+                )
+
+                # --------------------------------------------------
+                # SPEAK SECOND
+                # --------------------------------------------------
+
+                self.status_changed.emit(
+                    "🔊 Speaking..."
+                )
+
+                speak(answer)
+
+                if not self.running:
+                    break
+
+                # --------------------------------------------------
+                # AUTOMATICALLY LISTEN AGAIN
+                # --------------------------------------------------
 
                 self.status_changed.emit(
                     "🎤 Listening..."
                 )
 
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(
+                str(e)
+            )
 
-        finally:
-            self.running = False
+            self.status_changed.emit(
+                "Error"
+            )

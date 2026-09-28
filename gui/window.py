@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -489,6 +489,8 @@ class NekoWindow(QMainWindow):
             row
         )
 
+        self.chat_container.adjustSize()
+
         self.scroll_to_bottom()
 
     # ======================================================
@@ -504,7 +506,22 @@ class NekoWindow(QMainWindow):
     # SCROLL
     # ======================================================
 
+
     def scroll_to_bottom(self):
+        QTimer.singleShot(
+            0,
+            self._scroll_to_bottom
+        )
+
+        QTimer.singleShot(
+            50,
+            self._scroll_to_bottom
+        )
+
+
+    def _scroll_to_bottom(self):
+        self.chat_container.adjustSize()
+
         scrollbar = (
             self.chat_scroll.verticalScrollBar()
         )
@@ -512,6 +529,10 @@ class NekoWindow(QMainWindow):
         scrollbar.setValue(
             scrollbar.maximum()
         )
+
+
+
+
 
     # ======================================================
     # TEXT CHAT
