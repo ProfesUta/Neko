@@ -2,6 +2,7 @@ from tools.system import get_system_status
 from tools.applications import open_application, close_application
 from tools.files import list_files, search_file, open_path
 from tools.browser import open_url, search_web
+from tools.spatial import SPATIAL_TOOLS
 
 from memory.database import remember_fact, search_memories
 
@@ -18,6 +19,7 @@ AVAILABLE_FUNCTIONS = {
     "remember_fact": remember_fact,
     "search_memories": search_memories,
 }
+AVAILABLE_FUNCTIONS.update({function.__name__: function for function in SPATIAL_TOOLS})
 
 
 TOOLS = [
@@ -32,3 +34,4 @@ TOOLS = [
     remember_fact,
     search_memories,
 ]
+TOOLS.extend(SPATIAL_TOOLS)

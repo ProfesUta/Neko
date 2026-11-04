@@ -1,0 +1,4 @@
+-r requirements-core.txt
+numpy==2.4.6
+sounddevice==0.5.6
+pytest==9.2.0

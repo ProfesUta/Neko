@@ -1,127 +1,27 @@
+import logging
+import sys
+
+from PySide6.QtWidgets import QApplication
+
 from config import SYSTEM_PROMPT
-from core.chat import chat
 from core.context import Context
-from core.voice_chat import voice_chat
-from memory import database as memory
+from gui.styles import DARK_THEME
+from gui.window import CapriWindow
 
 
-context = Context()
-
-memories = memory.get_memories()
-
-if memories:
-    memory_text = "\n".join(f"- {item}" for item in memories)
-else:
-    memory_text = "No long-term memories yet."
+def build_messages():
+    return [{"role": "system", "content": SYSTEM_PROMPT}], Context()
 
 
-system_prompt = SYSTEM_PROMPT + f"""
-
-LONG-TERM MEMORY:
-
-These are facts that the user previously asked you to remember:
-
-{memory_text}
-
-Use these memories naturally when relevant.
-Do not mention the memory system unless the user asks about it.
-
-SHORT-TERM CONTEXT:
-
-{context.get_text()}
-
-Use this context to understand references such as:
-- "it"
-- "that"
-- "this"
-- "there"
-- "the app"
-- "the folder"
-- "the website"
-
-If the reference is ambiguous, ask the user instead of guessing.
-"""
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    app = QApplication(sys.argv)
+    app.setStyleSheet(DARK_THEME)
+    messages, context = build_messages()
+    window = CapriWindow(messages, context)
+    window.show()
+    return app.exec()
 
 
-messages = [
-    {
-        "role": "system",
-        "content": system_prompt
-    }
-]
-
-
-print("🐱 Neko is ready!")
-print()
-print("Commands:")
-print("  /memory  - show saved memories")
-print("  /remember <text> - save a memory")
-print("  /forget  - delete all memories")
-print("  /voice   - talk to Neko using your microphone")
-print("  /exit    - quit")
-print()
-
-
-while True:
-    user = input("You: ").strip()
-
-    if not user:
-        continue
-
-    if user.lower() == "/exit":
-        print("Neko: Hmph. Leaving already?")
-        break
-
-    if user.lower() == "/voice":
-        voice_chat(messages, context)
-        continue
-
-    if user.lower() == "/memory":
-        memories = memory.get_memories()
-
-        if not memories:
-            print("Neko: I don't remember anything yet.")
-        else:
-            print("Neko remembers:")
-
-            for item in memories:
-                print(" -", item)
-
-        print()
-        continue
-
-    if user.lower().startswith("/remember "):
-        new_memory = user[10:].strip()
-
-        if new_memory:
-            result = memory.save_memory(new_memory)
-
-            if result.startswith("Remembered:"):
-                print("Neko: Hmph... fine. I'll remember that.")
-
-            elif result.startswith("That memory already exists:"):
-                print("Neko: I already remember that, baka.")
-
-            else:
-                print("Neko:", result)
-        else:
-            print("Neko: Remember WHAT, baka?")
-
-        print()
-        continue
-
-    if user.lower() == "/forget":
-        memory.delete_all_memories()
-        print("Neko: Fine! I forgot everything. Hmph.")
-        print()
-        continue
-
-    messages.append({
-        "role": "user",
-        "content": user
-    })
-
-    answer = chat(messages, context)
-
-    print("Neko:", answer)
-    print()
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,4 +1,6 @@
 import subprocess
+import os
+from pathlib import PureWindowsPath
 
 
 APPLICATIONS = {
@@ -54,26 +56,32 @@ def close_application(name: str) -> str:
 
     try:
         if name == "calculator":
-            subprocess.run(
+            result = subprocess.run(
                 [
                     "powershell",
                     "-NoProfile",
                     "-Command",
-                    "Get-Process CalculatorApp "
-                    "-ErrorAction SilentlyContinue | Stop-Process"
+                    "$p = Get-Process CalculatorApp -ErrorAction SilentlyContinue; "
+                    "if (-not $p) { exit 1 }; $p | Stop-Process -ErrorAction Stop"
                 ],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
 
-            return "Closed application: calculator"
+            if result.returncode == 0:
+                return "Closed application: calculator"
+            return "calculator does not appear to be running, or could not be closed."
 
-        executable = APPLICATIONS[name]
+        executable = PureWindowsPath(APPLICATIONS[name]).name
 
         result = subprocess.run(
             ["taskkill", "/IM", executable, "/T"],
             capture_output=True,
-            text=True
+            text=True,
+            timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
 
         if result.returncode == 0:

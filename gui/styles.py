@@ -1,259 +1,161 @@
 DARK_THEME = """
-/* =========================================================
-   MAIN WINDOW
-   ========================================================= */
-
-QMainWindow {
-    background-color: #0d0b12;
-}
-
-QWidget {
-    background-color: #0d0b12;
-    color: #f3edf8;
+QWidget#overlayRoot {
+    background: transparent;
+    color: #e6fbff;
     font-family: "Segoe UI";
-    font-size: 14px;
-}
-
-
-/* =========================================================
-   HEADER
-   ========================================================= */
-
-QLabel#titleLabel {
-    color: #f7f0fb;
-    font-size: 22px;
-    font-weight: 600;
 }
 
 QLabel#statusLabel {
-    color: #a79caf;
+    background: rgba(5, 15, 23, 185);
+    border: 1px solid rgba(83, 232, 244, 110);
+    border-radius: 10px;
+    color: #b7f7ff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 4px 9px;
+}
+
+QFrame#controlsPopup {
+    background: #081824;
+    border: 1px solid #315969;
+    border-radius: 12px;
+    color: #c8fbff;
+    font-family: "Segoe UI";
+}
+
+QPushButton#voiceButton, QPushButton#visionButton, QPushButton#closeButton {
+    background: rgba(5, 15, 23, 210);
+    border: 1px solid rgba(83, 232, 244, 150);
+    border-radius: 15px;
+    color: #c8fbff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 6px 12px;
+}
+
+QPushButton#chatButton, QPushButton#stopButton, QPushButton#adviceButton {
+    background: rgba(5, 15, 23, 210);
+    border: 1px solid rgba(83, 232, 244, 110);
+    border-radius: 10px;
+    color: #c8fbff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 6px 12px;
+}
+
+QPushButton#chatButton:hover, QPushButton#stopButton:hover, QPushButton#adviceButton:hover {
+    background: rgba(18, 53, 65, 230);
+    border-color: #53e8f4;
+}
+
+QPushButton#stopButton:enabled {
+    border-color: #ff6688;
+    color: #ffe8ed;
+}
+
+QPushButton#stopButton:disabled {
+    color: #8b969c;
+    border-color: rgba(139, 150, 156, 70);
+}
+
+QPushButton#adviceButton:checked {
+    border-color: #53e8f4;
+    background: #12404b;
+}
+
+QFrame#adviceBubble {
+    background: #0b1a27;
+    border: 1px solid #53e8f4;
+    border-radius: 10px;
+}
+
+QFrame#adviceBubble QLabel {
+    color: #e6fbff;
+    font-family: "Segoe UI";
+    font-size: 12px;
+    border: none;
+}
+
+QFrame#adviceBubble QLabel#adviceHeading {
+    color: #53e8f4;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+QDialog#chatPanel {
+    background: #0b141e;
+    color: #d6f5fc;
+    font-family: "Segoe UI";
     font-size: 12px;
 }
 
-QLabel#onlineDot {
-    color: #9b5de5;
-    font-size: 11px;
+QDialog#chatPanel QLabel, QDialog#chatPanel QCheckBox {
+    color: #b7d5df;
 }
 
-
-/* =========================================================
-   CHAT AREA
-   ========================================================= */
-
-QScrollArea#chatScroll {
-    background-color: #0d0b12;
-    border: none;
+QDialog#chatPanel QLabel#chatTitle {
+    color: #53e8f4;
+    font-size: 15px;
+    font-weight: 700;
+    padding: 6px 0;
 }
 
-QWidget#chatContainer {
-    background-color: #0d0b12;
+QDialog#chatPanel QPlainTextEdit, QDialog#chatPanel QLineEdit {
+    background: #101f2c;
+    color: #e6fbff;
+    border: 1px solid #254858;
+    border-radius: 8px;
+    padding: 9px;
+    selection-background-color: #225668;
 }
 
-
-/* =========================================================
-   MESSAGE TIME
-   ========================================================= */
-
-QLabel#messageTime {
-    background-color: transparent;
-    color: #817889;
-
-    font-size: 11px;
-
-    padding: 0px;
+QDialog#chatPanel QLineEdit:focus {
+    border-color: #53e8f4;
 }
 
-
-/* =========================================================
-   NEKO AVATAR
-   ========================================================= */
-
-QLabel#nekoAvatar {
-    background-color: #251d30;
-
-    border: 1px solid #3c2c4d;
-    border-radius: 22px;
-
-    color: #c79bea;
-
-    font-size: 19px;
-
-    padding: 0px;
+QDialog#chatPanel QPushButton {
+    background: #153040;
+    color: #c8fbff;
+    border: 1px solid #315969;
+    border-radius: 8px;
+    padding: 8px 16px;
 }
 
-
-/* =========================================================
-   NEKO MESSAGE
-   ========================================================= */
-
-QLabel#nekoBubble {
-    background-color: #272131;
-
-    color: #eee7f4;
-
-    border: 1px solid #342b40;
-    border-radius: 19px;
-
-    padding: 11px 18px;
-
-    font-size: 14px;
+QDialog#chatPanel QPushButton:hover {
+    border-color: #53e8f4;
 }
 
-
-/* =========================================================
-   USER MESSAGE
-   ========================================================= */
-
-QLabel#userBubble {
-    background-color: #70469b;
-
-    color: #ffffff;
-
-    border: 1px solid #8356b2;
-    border-radius: 19px;
-
-    padding: 11px 18px;
-
-    font-size: 14px;
+QDialog#chatPanel QPushButton:disabled {
+    color: #758a94;
+    border-color: #253b48;
 }
 
-
-/* =========================================================
-   COMPOSER
-   ========================================================= */
-
-QFrame#composerFrame {
-    background-color: #15111b;
-
-    border: 1px solid #30243d;
-    border-radius: 18px;
+QPushButton#voiceButton:hover, QPushButton#visionButton:hover, QPushButton#closeButton:hover {
+    background: rgba(18, 53, 65, 230);
+    border-color: #53e8f4;
 }
 
-
-/* =========================================================
-   MESSAGE INPUT
-   ========================================================= */
-
-QLineEdit#messageInput {
-    background-color: transparent;
-
-    border: none;
-
-    color: #f3edf8;
-
-    padding: 11px 14px;
-
-    font-size: 14px;
+QPushButton#closeButton {
+    border-color: #ff6688;
+    border-radius: 10px;
+    color: #ffe8ed;
+    padding: 8px 12px;
 }
 
-QLineEdit#messageInput:focus {
-    border: none;
+QPushButton#voiceButton:checked {
+    background: rgba(111, 34, 50, 225);
+    border-color: #ff6688;
+    color: #ffe8ed;
 }
 
-QLineEdit#messageInput::placeholder {
-    color: #746b7d;
+QPushButton#visionButton:checked {
+    background: rgba(12, 72, 81, 225);
+    border-color: #53e8f4;
+    color: #e6fbff;
 }
 
-
-/* =========================================================
-   VOICE BUTTON
-   ========================================================= */
-
-QPushButton#voiceButton {
-    background-color: #282033;
-
-    border: 1px solid #3e3050;
-    border-radius: 17px;
-
-    color: #d7b5f0;
-
-    font-size: 17px;
-}
-
-QPushButton#voiceButton:hover {
-    background-color: #352743;
-
-    border: 1px solid #75549a;
-}
-
-QPushButton#voiceButton:pressed {
-    background-color: #443054;
-}
-
-QPushButton#voiceButton:disabled {
-    background-color: #1d1822;
-
-    border: 1px solid #29222f;
-
-    color: #62596a;
-}
-
-
-/* =========================================================
-   SEND BUTTON
-   ========================================================= */
-
-QPushButton#sendButton {
-    background-color: #7549a2;
-
-    border: 1px solid #885bb6;
-    border-radius: 17px;
-
-    color: #ffffff;
-
-    font-size: 18px;
-}
-
-QPushButton#sendButton:hover {
-    background-color: #8254b0;
-
-    border: 1px solid #9b6ac8;
-}
-
-QPushButton#sendButton:pressed {
-    background-color: #643f8b;
-}
-
-QPushButton#sendButton:disabled {
-    background-color: #302638;
-
-    border: 1px solid #40334a;
-
-    color: #6d6377;
-}
-
-
-/* =========================================================
-   SCROLLBAR
-   ========================================================= */
-
-QScrollBar:vertical {
-    background: transparent;
-
-    width: 8px;
-
-    margin: 4px 2px 4px 0px;
-}
-
-QScrollBar::handle:vertical {
-    background: #3b3048;
-
-    border-radius: 4px;
-
-    min-height: 40px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background: #554364;
-}
-
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-
-QScrollBar::add-page:vertical,
-QScrollBar::sub-page:vertical {
-    background: transparent;
+QPushButton#voiceButton:disabled, QPushButton#visionButton:disabled {
+    color: #8b969c;
+    border-color: rgba(139, 150, 156, 100);
 }
 """

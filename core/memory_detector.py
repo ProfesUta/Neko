@@ -1,6 +1,5 @@
-﻿import ollama
-
 from config import MODEL
+from core.model_client import request_chat
 
 
 DETECTOR_PROMPT = """
@@ -27,9 +26,11 @@ Do not save passwords, authentication codes, private keys, financial credentials
 """
 
 
-def detect_memory(user_message):
-    response = ollama.chat(
+def detect_memory(user_message, cancel_event=None):
+    response = request_chat(
+        cancel_event=cancel_event,
         model=MODEL,
+        options={"temperature": 0, "num_predict": 100},
         messages=[
             {
                 "role": "system",

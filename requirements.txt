@@ -1,2 +1,10 @@
-ollama
-psutil
+-r requirements-core.txt
+
+# Voice input and output. Keep torch and torchaudio on the same release.
+numpy==2.4.6
+sounddevice==0.5.6
+torch==2.8.0
+torchaudio==2.8.0
+silero-vad==6.2.3
+faster-whisper==1.2.1
+piper-tts==1.8.0

@@ -1,255 +1,139 @@
+"""Lazy voice models and bounded, cancellable speech capture."""
+
 import os
-import warnings
+import logging
+import sysconfig
+import time
+from collections import deque
 from pathlib import Path
 
-import numpy as np
-import sounddevice as sd
-import torch
-
-warnings.filterwarnings(
-    "ignore",
-    category=FutureWarning,
-    module=r"torch\.jit\._serialization"
-)
-
-from silero_vad import load_silero_vad, VADIterator
-from faster_whisper import WhisperModel
-
+from config import MAX_RECORD_SECONDS, WHISPER_LANGUAGE, WHISPER_MODEL
+from core.cancellation import check_cancelled
 
 SAMPLE_RATE = 16000
-
-# Audio chunk used by Silero VAD.
-# 512 samples at 16 kHz = 32 ms.
-VAD_CHUNK_SIZE = 512
-
-# How much silence must pass before we consider speech finished.
+VAD_CHUNK_SIZE = 512  # 32 ms at 16 kHz.
 SILENCE_DURATION_MS = 700
-
-# Maximum time to wait for someone to start speaking.
 WAIT_TIMEOUT_SECONDS = 30
+PRE_ROLL_CHUNKS = 10
+whisper_model = None
+vad_iterator = None
+_dll_handles = []
 
 
-if os.name == "nt":
-    site_packages = Path(
-        os.environ.get(
-            "APPDATA",
-            ""
+def load_models(cancel_event=None):
+    """Load on the voice thread, keeping text chat independent of audio models."""
+    global whisper_model, vad_iterator
+    check_cancelled(cancel_event)
+    if os.name == "nt" and not _dll_handles:
+        packages = Path(sysconfig.get_paths()["purelib"])
+        directories = [
+            packages / "nvidia" / name / "bin"
+            for name in ("cublas", "cudnn", "cuda_nvrtc")
+        ]
+        for directory in directories:
+            if directory.is_dir():
+                _dll_handles.append(os.add_dll_directory(str(directory)))
+
+    import torch
+    from faster_whisper import WhisperModel
+    from silero_vad import VADIterator, load_silero_vad
+
+    if whisper_model is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        whisper_model = WhisperModel(
+            WHISPER_MODEL, device=device,
+            compute_type="float16" if device == "cuda" else "int8",
         )
-    ) / "Python" / "Python314" / "site-packages"
-
-    cuda_directories = [
-        site_packages / "nvidia" / "cublas" / "bin",
-        site_packages / "nvidia" / "cudnn" / "bin",
-        site_packages / "nvidia" / "cuda_nvrtc" / "bin",
-    ]
-
-    existing_directories = []
-
-    for directory in cuda_directories:
-        if directory.exists():
-            existing_directories.append(str(directory))
-
-            try:
-                os.add_dll_directory(str(directory))
-            except Exception:
-                pass
-
-    if existing_directories:
-        os.environ["PATH"] = (
-            os.pathsep.join(existing_directories)
-            + os.pathsep
-            + os.environ.get("PATH", "")
+    check_cancelled(cancel_event)
+    if vad_iterator is None:
+        vad_iterator = VADIterator(
+            load_silero_vad(), threshold=0.5, sampling_rate=SAMPLE_RATE,
+            min_silence_duration_ms=SILENCE_DURATION_MS, speech_pad_ms=200,
         )
+    check_cancelled(cancel_event)
 
 
-print("Loading Whisper model...")
+def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_event=None):
+    import numpy as np
+    import sounddevice as sd
+    import torch
 
-whisper_model = WhisperModel(
-    "base",
-    device="cuda",
-    compute_type="float16"
-)
-
-print("Whisper is ready!")
-print()
-
-print("Loading Silero VAD...")
-
-vad_model = load_silero_vad()
-vad_iterator = VADIterator(
-    vad_model,
-    threshold=0.5,
-    sampling_rate=SAMPLE_RATE,
-    min_silence_duration_ms=SILENCE_DURATION_MS,
-    speech_pad_ms=200
-)
-
-print("Silero VAD is ready!")
-print()
-
-
-def record_audio():
-    print("🎤 Listening...")
-
-    audio_chunks = []
-    speech_started = False
-    silence_started = False
-
-    def callback(indata, frames, time, status):
-        if status:
-            print(status)
-
-        audio_chunks.append(indata.copy())
-
-    stream = sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        blocksize=VAD_CHUNK_SIZE,
-        callback=callback
-    )
-
-    vad_iterator.reset_states()
-
-    with stream:
-        elapsed_seconds = 0
-
-        while True:
-            if not audio_chunks:
-                continue
-
-            chunk = audio_chunks.pop(0)
-
-            audio = torch.from_numpy(
-                chunk[:, 0]
-            )
-
-            speech_dict = vad_iterator(
-                audio,
-                return_seconds=False
-            )
-
-            if speech_dict:
-                if "start" in speech_dict:
-                    speech_started = True
-                    silence_started = False
-
-                    print("🗣️ Speech detected!")
-
-                elif "end" in speech_dict:
-                    if speech_started:
-                        print("🤫 Speech ended.")
-                        break
-
-            elapsed_seconds += len(chunk) / SAMPLE_RATE
-
-            if not speech_started and elapsed_seconds >= WAIT_TIMEOUT_SECONDS:
-                print("⏱️ No speech detected.")
-                return None
-
-    if not audio_chunks and not speech_started:
-        return None
-
-    # The VAD iterator consumes the chunks while detecting speech.
-    # For Whisper we need the complete recording, so this function
-    # records through a second pass below.
-    return None
-
-
-def record_until_silence():
-    print("🎤 Listening...")
-
+    load_models(stop_event)
+    pre_roll = deque(maxlen=PRE_ROLL_CHUNKS)
     recorded_chunks = []
-
-    speech_started = False
-    silence_chunks = 0
-
-    silence_chunks_needed = int(
-        SILENCE_DURATION_MS / 1000
-        * SAMPLE_RATE
-        / VAD_CHUNK_SIZE
-    )
-
+    speech_started_at = None
+    started_at = time.monotonic()
     vad_iterator.reset_states()
 
     with sd.InputStream(
-        samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        blocksize=VAD_CHUNK_SIZE
+        samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+        blocksize=VAD_CHUNK_SIZE,
     ) as stream:
-
         while True:
-            chunk, overflowed = stream.read(VAD_CHUNK_SIZE)
+            check_cancelled(stop_event)
+            now = time.monotonic()
+            if speech_started_at is None and now - started_at >= WAIT_TIMEOUT_SECONDS:
+                return None
+            if speech_started_at is not None and now - speech_started_at >= MAX_RECORD_SECONDS:
+                break
 
-            if overflowed:
-                print("⚠️ Audio buffer overflow.")
-
+            chunk, _overflowed = stream.read(VAD_CHUNK_SIZE)
             chunk = chunk.copy()
+            if speech_started_at is None:
+                pre_roll.append(chunk)
+            else:
+                recorded_chunks.append(chunk)
 
-            recorded_chunks.append(chunk)
+            # The recurrent model must see each audio chunk exactly once.
+            speech = vad_iterator(torch.from_numpy(chunk[:, 0]), return_seconds=False)
+            if speech and "start" in speech and speech_started_at is None:
+                speech_started_at = time.monotonic()
+                recorded_chunks.extend(pre_roll)
+                pre_roll.clear()
+                if on_speech_start:
+                    on_speech_start()
+            elif speech and "end" in speech and speech_started_at is not None:
+                break
+            if (
+                speech_started_at is None and idle_interrupt_event is not None
+                and idle_interrupt_event.is_set()
+            ):
+                return None
 
-            audio = torch.from_numpy(
-                chunk[:, 0]
-            )
-
-            speech_dict = vad_iterator(
-                audio,
-                return_seconds=False
-            )
-
-            if speech_dict:
-                if "start" in speech_dict:
-                    speech_started = True
-                    silence_chunks = 0
-                    print("🗣️ Speech detected!")
-
-                elif "end" in speech_dict:
-                    if speech_started:
-                        print("🤫 Speech ended.")
-                        break
-
-            if speech_started:
-                speech_probability = vad_model(
-                    audio,
-                    SAMPLE_RATE
-                ).item()
-
-                if speech_probability >= 0.5:
-                    silence_chunks = 0
-                else:
-                    silence_chunks += 1
-
-                if silence_chunks >= silence_chunks_needed:
-                    print("🤫 Speech ended.")
-                    break
-
-    if not speech_started:
+    check_cancelled(stop_event)
+    if speech_started_at is None or not recorded_chunks:
         return None
-
-    audio = np.concatenate(
-        recorded_chunks,
-        axis=0
-    )
-
-    return audio[:, 0]
+    return np.concatenate(recorded_chunks, axis=0)[:, 0]
 
 
-def transcribe_audio(audio):
+def transcribe_audio(audio, cancel_event=None):
     if audio is None:
         return ""
-
-    print("📝 Transcribing...")
-
-    segments, info = whisper_model.transcribe(
-        audio,
-        language="en",
-        beam_size=5
+    check_cancelled(cancel_event)
+    segments, _info = whisper_model.transcribe(
+        audio, language=WHISPER_LANGUAGE, beam_size=5,
+        condition_on_previous_text=False,
+        vad_filter=True,
+        no_speech_threshold=0.6,
+        log_prob_threshold=-1.0,
+        compression_ratio_threshold=2.4,
     )
-
-    text = ""
-
+    text = []
+    previous = ""
     for segment in segments:
-        text += segment.text
-
-    return text.strip()
+        check_cancelled(cancel_event)
+        if (
+            getattr(segment, "avg_logprob", 0) < -1.5
+            or getattr(segment, "compression_ratio", 1) > 2.4
+            or (getattr(segment, "no_speech_prob", 0) > 0.6
+                and getattr(segment, "avg_logprob", 0) < -0.5)
+        ):
+            logging.info("Ignored an unreliable speech segment")
+            continue
+        current = segment.text.strip()
+        if len(current) >= 18 and current.casefold() == previous:
+            continue
+        text.append(segment.text)
+        previous = current.casefold()
+    check_cancelled(cancel_event)
+    return "".join(text).strip()

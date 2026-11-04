@@ -1,126 +1,127 @@
+"""Piper synthesis and interruptible audio playback."""
+
+import importlib.util
+import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
+import wave
 from pathlib import Path
+from threading import Event
 
+from config import TTS_TIMEOUT_SECONDS
+from core.cancellation import AnyEvent, DeadlineEvent, check_cancelled
 
-VOICE_PATH = Path("F:/Neko/assets/voices/en_US-amy-medium.onnx")
-OUTPUT_FILE = Path("F:/Neko/voice/tests/test_voice.wav")
+BASE_DIR = Path(__file__).resolve().parent.parent
+VOICE_PATH = BASE_DIR / "assets" / "voices" / "en_US-amy-medium.onnx"
 
 
 def clean_for_speech(text: str) -> str:
-    """
-    Clean Neko's response before sending it to Piper.
-
-    This only affects what Piper speaks.
-    The original response shown in the chat remains unchanged.
-    """
-
     if not text:
         return ""
-
-    # Remove stage directions.
-    # Example:
-    # *crosses arms*
-    # *tilts head*
-    text = re.sub(r"\*[^*]+\*", "", text)
-
-    # Remove parenthesized notes.
-    text = re.sub(r"\([^)]*\)", "", text)
-
-    # Make "Hmph" easier for Piper to pronounce.
-    text = re.sub(r"\bHmph\.\.\.", "Hmm...", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bHmph\.", "Hmm.", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bHmph\b", "Hmm", text, flags=re.IGNORECASE)
-
-    # Replace Nya sounds with something Piper pronounces naturally.
-    text = re.sub(r"\bNyaa*~", "Meow.", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bNyaa*!", "Meow!", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bNyaa*\.\.\.", "Meow...", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bNyaa*\b", "Meow", text, flags=re.IGNORECASE)
-
-    # Remove emoji and other non-ASCII characters.
-    text = text.encode("ascii", "ignore").decode("ascii")
-
-    # Remove symbols that should never be spoken.
-    #
-    # Keep normal punctuation:
-    # . , ! ? : ; ' " - ...
-    #
-    # Remove:
-    # ~ @ # $ % ^ & * _ = + < > / \ | { } [ ] `
-    text = re.sub(
-        r"[~@#$%^&*_+=<>/\\|{}\[\]`]",
-        "",
-        text
-    )
-
-    # Remove text hearts such as <3.
+    text = re.sub(r"```.*?```", " Code is shown in chat. ", text, flags=re.S)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # Preserve emphasized words, numbers, accents, and meaningful punctuation.
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text)
+    text = re.sub(r"\*(?:smirks|sighs|laughs|chuckles|shrugs|crosses arms|tilts head)[^*]*\*", "", text, flags=re.I)
+    text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF]", "", text)
     text = re.sub(r"<\s*3", "", text)
-
-    # Clean spaces before punctuation.
-    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
-
-    # Clean repeated spaces.
     text = re.sub(r"[ \t]+", " ", text)
-
-    # Clean excessive blank lines.
     text = re.sub(r"\n\s*\n+", "\n", text)
-
     return text.strip()
 
 
-def speak(text: str):
-    """
-    Send text to Piper and play the generated WAV file.
-    """
-
-    cleaned_text = clean_for_speech(text)
-
-    if not cleaned_text:
-        return
-
+def _synthesize(text, output_path, cancel_event):
+    check_cancelled(cancel_event)
+    if importlib.util.find_spec("piper") is None:
+        raise RuntimeError(
+            "Piper speech support is not installed. Run: python -m pip install -r requirements.txt"
+        )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "piper", "--model", str(VOICE_PATH),
+         "--output_file", str(output_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8",
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    pending_input = text
+    deadline = time.monotonic() + TTS_TIMEOUT_SECONDS
     try:
-        print("[DEBUG] Sending response to Piper...")
+        while True:
+            check_cancelled(cancel_event)
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Speech generation took too long. Please try again.")
+            try:
+                _stdout, stderr = process.communicate(input=pending_input, timeout=0.05)
+                if process.returncode:
+                    raise RuntimeError(f"Piper failed: {stderr.strip()}")
+                return
+            except subprocess.TimeoutExpired:
+                # communicate() retains the buffered input after its first call.
+                pending_input = None
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
 
-        # Use the Python module directly instead of relying on
-        # the Windows PATH containing a "piper.exe" executable.
-        process = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "piper",
-                "--model",
-                str(VOICE_PATH),
-                "--output_file",
-                str(OUTPUT_FILE),
-            ],
-            input=cleaned_text,
-            text=True,
-            capture_output=True,
-        )
 
-        if process.returncode != 0:
-            print("[TTS ERROR]")
-            print(process.stderr)
-            return
+def _play_wav(path, cancel_event, on_playback_start=None):
+    import numpy as np
+    import sounddevice as sd
 
-        # Play the generated WAV file.
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    f'(New-Object Media.SoundPlayer '
-                    f'"{OUTPUT_FILE}").PlaySync()'
-                ),
-            ],
-            capture_output=True,
-            text=True,
-        )
+    with wave.open(str(path), "rb") as audio:
+        if audio.getsampwidth() != 2:
+            raise RuntimeError("Piper returned an unsupported audio format.")
+        data = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2")
+        data = data.reshape(-1, audio.getnchannels())
+        rate = audio.getframerate()
+    check_cancelled(cancel_event)
+    try:
+        sd.play(data, samplerate=rate)
+        if on_playback_start:
+            on_playback_start()
+        while sd.get_stream().active:
+            check_cancelled(cancel_event)
+            if cancel_event is not None:
+                cancel_event.wait(0.03)
+            else:
+                time.sleep(0.03)
+    finally:
+        sd.stop()
 
-        print("[DEBUG] Piper finished speaking.")
 
-    except Exception as e:
-        print(f"[TTS ERROR] {e}")
+def speak(text: str, cancel_event=None, start_deadline=None, on_playback_start=None, before_playback=None):
+    """Cancel both synthesis and playback without waiting for the whole reply."""
+    check_cancelled(cancel_event)
+    cleaned = clean_for_speech(text)
+    if not cleaned:
+        return
+    if not VOICE_PATH.is_file():
+        raise FileNotFoundError(f"Missing Piper voice model: {VOICE_PATH}")
+    with tempfile.TemporaryDirectory(prefix="capri-speech-") as directory:
+        output = Path(directory) / "reply.wav"
+        start_cancellation = cancel_event
+        if start_deadline is not None:
+            start_cancellation = AnyEvent(cancel_event or Event(), DeadlineEvent(start_deadline))
+        _synthesize(cleaned, output, start_cancellation)
+        check_cancelled(start_cancellation)
+        if before_playback is not None:
+            # Synthesis can take seconds. Reconfirm the pointing action before
+            # starting audio, and replace an obsolete 'right there' if necessary.
+            replacement = before_playback()
+            check_cancelled(start_cancellation)
+            if replacement and clean_for_speech(replacement) != cleaned:
+                _synthesize(clean_for_speech(replacement), output, start_cancellation)
+                check_cancelled(start_cancellation)
+        # Once a fresh tip starts, finish the short sentence; Stop still wins.
+        if on_playback_start is None:
+            _play_wav(output, cancel_event)
+        else:
+            _play_wav(output, cancel_event, on_playback_start)

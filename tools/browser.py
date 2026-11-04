@@ -1,5 +1,5 @@
 import webbrowser
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 def open_url(url: str) -> str:
@@ -12,11 +12,15 @@ def open_url(url: str) -> str:
     if not url:
         return "You didn't give me a URL."
 
-    if not url.startswith(("http://", "https://")):
+    if "://" not in url:
         url = "https://" + url
 
     try:
-        webbrowser.open(url)
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return "Failed to open the website: provide a valid HTTP or HTTPS URL."
+        if not webbrowser.open(url):
+            return "Failed to open the website: no browser accepted the request."
 
         return f"Opened website: {url}"
 
@@ -42,7 +46,8 @@ def search_web(query: str) -> str:
             + encoded_query
         )
 
-        webbrowser.open(url)
+        if not webbrowser.open(url):
+            return "Failed to perform the web search: no browser accepted the request."
 
         return f"Performed web search for: {query}"
 
