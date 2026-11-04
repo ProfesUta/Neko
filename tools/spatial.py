@@ -36,7 +36,7 @@ def get_visible_windows() -> str:
 
 
 def locate_on_screen(query: str, monitor_id: str = "") -> str:
-    """Find a visible app/control by name. Returns a verified target_id or uncertainty; does not move."""
+    """Find a visible app/control by name. Omit monitor_id to search all displays; otherwise use an ID from get_monitors or a number starting at 1. Returns a verified target_id or uncertainty; does not move."""
     return _call("locate_on_screen", query=query, monitor_id=monitor_id or None)
 
 
@@ -51,7 +51,7 @@ def point_at_target(target_id: str, duration_ms: int = 5000) -> str:
 
 
 def show_target(query: str, monitor_id: str = "") -> str:
-    """Locate a named visible object, teleport beside it, point, and highlight. Explain only after status=pointing. Ask for clarification on ambiguous/not_found/unverified results."""
+    """Locate a named visible object, teleport beside it, and point with lightning to its verified bounds. Omit monitor_id to search all displays; otherwise use a current monitor ID or number starting at 1. Explain only after status=pointing. Ask for clarification on ambiguous/not_found/unverified/unavailable results."""
     return _call("show_target", query=query, monitor_id=monitor_id or None)
 
 

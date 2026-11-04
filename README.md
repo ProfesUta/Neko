@@ -138,8 +138,9 @@ On supported Windows versions, effect windows are excluded from screen capture;
 other backends add active overlays to the existing screen-vision masks.
 
 The new `happy.svg` flashes briefly after a successful typed conversation.
-`pointingLeft.svg` appears when opening chat to Capri's left. Listening, speech
-detection, thinking, and talking take priority over these temporary poses. SVG
+`pointingLeft.svg` is reserved for verified spatial targets; opening chat does not
+trigger an ungrounded pointing gesture. Listening, speech detection, thinking,
+and talking take priority over temporary expressions. SVG
 hot reload refreshes both the image and its cached silhouette.
 
 Verified spatial pointing uses a separate gesture layer that lasts through the
@@ -195,10 +196,25 @@ considers the actual sprite bounds, fingertip, target overlap, monitor edges,
 and Capri's open panels. A fullscreen target may leave no completely empty space;
 Capri uses a safe in-bounds position and the target outline helps identify it.
 
-The optional neon-red outline appears with the pointing pose, passes mouse input
-through, and disappears automatically. Window movement/occlusion is checked in
-the background while pointing. Stop, dragging Capri, a replacement request, or a
-monitor change clears the gesture and outline. Normal expressions resume afterward.
+A black/crimson lightning channel runs from the pointing hand to the center of
+the verified target box. A small fixed red reticle marks the endpoint while the
+bolts flicker. The hand position follows the actual SVG's scale, stable feet and
+mirroring. The channel remains visible through the explanation, without covering
+Capri's silhouette or intercepting clicks. The optional neon-red box outline
+fades after five seconds. Stop, dragging, a replacement or failed lookup, a target
+window becoming unavailable, and monitor changes clear the gesture and effects.
+Normal expressions resume afterward. The existing teleport bursts are preserved.
+
+Monitor tool arguments use IDs from `get_monitors` or numbers starting at 1.
+An omitted value, `0`, `auto`, or `all` searches all displays. Explicit monitor
+references in the user's request take priority. A disconnected ID returns the
+current inventory instead of raising a tool traceback or guessing a destination.
+
+Window targets are refreshed by their native window handle and process ID. A
+Discord channel/server name, unread count, or browser tab title changing does not
+invalidate the app. Each refresh still checks current bounds and visibility;
+closed, replaced, or fully covered targets return an `unavailable` result and
+clear pointing instead of producing a tool traceback.
 
 Adjust these defaults in `config.py`, then restart:
 
@@ -206,11 +222,30 @@ Adjust these defaults in `config.py`, then restart:
 AUTONOMOUS_MOVEMENT_ENABLED = True  # Optional idle personality movement
 TARGET_HIGHLIGHT_ENABLED = True
 TARGET_HIGHLIGHT_DURATION_MS = 5000  # Maximum outline lifetime per gesture
+TARGET_LIGHTNING_ENABLED = True     # Hand-to-target channel while pointing
+TARGET_LIGHTNING_INTENSITY = 1.0     # Bolt irregularity, branches and sparks (0.1-3)
 SPATIAL_POINTING_HOLD_MS = 2500      # Minimum hold for a silent typed reply
 SPATIAL_POINTING_MAX_MS = 30000      # Waiting pose timeout; active speech owns its pose
 SPATIAL_TARGET_TTL_SECONDS = 180     # Target ID lifetime; every action still revalidates
 POINTING_LEFT_HAND_ANCHOR = (0.17, 0.25)
 ```
+
+Preview both directions using the real SVG and lightning renderer without screen
+capture, AI inference, or audio:
+
+```powershell
+.\.venv\Scripts\python.exe preview_pointing.py
+.\.venv\Scripts\python.exe preview_pointing.py --dpr 2 --output-dir artifacts/spatial-2x
+```
+
+This produces `lightning-target.png` and an animated `lightning-target.gif`.
+
+`Standby` is the normal conversation idle state. A `SCREEN ERROR` indicates a
+capture or model failure; the VISION button's tooltip and console show its cause.
+Temporary capture errors now reopen the capture handles and retry at the usual
+interval, including after display-mode changes. The error clears only after a
+successful screen analysis. Identical repeated failures are logged once until
+recovery; permanent model/dependency failures still require fixing their cause.
 
 The coordinate conversion follows [Qt's per-screen high-DPI geometry](https://doc.qt.io/qt-6.8/highdpi.html)
 and [UI Automation's physical bounding rectangles](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.automationelement.boundingrectangleproperty).

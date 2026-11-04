@@ -275,6 +275,12 @@ def test_gui_arrival_pointing_highlight_and_acknowledgement_precede_response(gui
     import config
     window, spatial, backend = gui_spatial
     monkeypatch.setattr(config, "TARGET_HIGHLIGHT_DURATION_MS", 200)
+    bursts = []
+    play = window.teleport_effects.play
+    def record_play(*args):
+        play(*args)
+        bursts.extend(window.teleport_effects.bursts)
+    monkeypatch.setattr(window.teleport_effects, "play", record_play)
     generation = spatial.begin_turn("Where's Discord?")
     result = run_on_worker(lambda: spatial.show_target("Discord"), wait_until)
     assert result["status"] == "pointing"
@@ -284,7 +290,7 @@ def test_gui_arrival_pointing_highlight_and_acknowledgement_precede_response(gui
     assert highlight._overlay.isVisible()
     from PySide6.QtCore import Qt
     assert highlight._overlay.windowFlags() & Qt.WindowType.WindowTransparentForInput
-    assert len(window.teleport_effects.bursts) == 2
+    assert len(bursts) == 2
     position = QPoint(window.pos())
     window._next_wander_at = 0
     window._move_pet()
@@ -292,12 +298,15 @@ def test_gui_arrival_pointing_highlight_and_acknowledgement_precede_response(gui
     window.set_status("Speaking")
     assert window.sprite.pointing_direction is not None
     assert window.movement_coordinator.state == ActionState.SPEAKING
-    wait_until(lambda: not highlight._overlay.isVisible())
+    wait_until(lambda: highlight.now_ms() > 220)
+    # The brief outline can fade; the channel stays attached during speech.
+    assert highlight._overlay.isVisible() and highlight.beam is not None
     spatial.finish_turn(generation)
     window.movement_coordinator.reset()
     window.set_status("Listening")
     assert window.sprite.pointing_direction is None
     assert window.sprite._frames == ("listening",)
+    assert not highlight._overlay.isVisible() and highlight.beam is None
 
 
 def test_window_change_after_detection_before_gui_ack_prevents_teleport(gui_spatial, wait_until):
@@ -310,8 +319,9 @@ def test_window_change_after_detection_before_gui_ack_prevents_teleport(gui_spat
             backend.items = []
         real_dispatch(ticket)
     spatial.dispatch = dispatch
-    with pytest.raises(ValueError, match="moved or disappeared"):
-        run_on_worker(lambda: spatial.show_target("Discord"), wait_until)
+    result = run_on_worker(lambda: spatial.show_target("Discord"), wait_until)
+    assert result["status"] == "unavailable"
+    assert "moved or disappeared" in result["message"]
     assert window.pos() == original
     assert not window.sprite.pointing_direction
     assert not window.teleport_effects.bursts

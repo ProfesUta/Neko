@@ -28,6 +28,11 @@ desktop or microphone.
 | Monitor unplugged | Target revision rejection, gesture clearing, safe recovery | Unplug/reconnect the display Capri occupies |
 | Input interception | Native Qt overlay flags and offscreen checks | Click through the target outline/VFX; drag and click Capri normally |
 | Highlight lifetime | Timer expiry and cancellation cleanup | Check optional red outline and TARGET_HIGHLIGHT_ENABLED=False |
+| Hand-to-target lightning | Exact endpoints in both poses; negative coordinates and DPR 1/1.5/2 rendering | Verify fingertip alignment, visible target reticle, click-through and cleanup during speech |
+| Monitor zero/default | String/numeric zero, null, all-display search and explicit user monitor precedence | Ask for an app on another display without naming its monitor |
+| Failed follow-up lookup | Previous beam/target cleared on not-found, invalid display and ambiguous lookup | Ask for a nonexistent target after a successful pointing request |
+| Discord channel/server titles | Refresh by window handle + process ID; changing titles, bounds and occlusion; no switch to another window | Ask for Discord with a channel/server open, then change channels during the explanation |
+| Transient screen errors | Capture initialization/grab/model retries; error persists until success | Switch fullscreen modes or lock/unlock, then check VISION recovers |
 
 Native monitor discovery in the development session detected two displays,
 including a secondary display at negative X with a vertical offset. The session's

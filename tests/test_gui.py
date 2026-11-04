@@ -74,6 +74,24 @@ def test_listening_allows_vision_but_inference_pauses_it(qapp):
         window.close()
 
 
+def test_screen_error_remains_visible_during_retry_and_clears_after_success(qapp):
+    window = make_window(qapp)
+    window.vision_worker = VisionWorker(5, "test", (100, 100), 2)
+    try:
+        window.handle_vision_error("Capture unavailable")
+        window.handle_vision_status("Vision: watching the active app")
+        window.handle_inference_active(True)
+        assert window._vision_error == "Capture unavailable"
+        assert "Capture unavailable" in window.vision_button.toolTip()
+        assert window.vision_button.text() == "VISION ERROR"
+        window.handle_vision_status("Vision: screen understood")
+        assert window._vision_error is None
+        assert window.vision_button.text() == "VISION PAUSED"
+    finally:
+        window.vision_worker = None
+        window.close()
+
+
 def test_vision_started_during_inference_is_already_paused(qapp, monkeypatch):
     monkeypatch.setattr(VisionWorker, "start", lambda self: None)
     window = make_window(qapp)

@@ -1,6 +1,7 @@
 from io import BytesIO
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 
 from core.context import Context
@@ -154,3 +155,49 @@ def test_question_preempts_background_model_without_parallel_inference(monkeypat
         vision.stop()
         background.join(3)
         assert not background.is_alive()
+
+
+@pytest.mark.parametrize("failure_stage", ["open", "grab", "analyze"])
+def test_transient_failures_retry_with_fresh_capture_handles(monkeypatch, failure_stage):
+    import mss
+    import gui.vision as module
+    vision = worker()
+    vision.interval_seconds = 0
+    attempts, observations, errors, statuses = [], [], [], []
+
+    class Capture:
+        def __enter__(self):
+            attempts.append(self)
+            if failure_stage == "open" and len(attempts) < 3:
+                raise OSError("Display is switching modes")
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    def take_frame(*args):
+        if failure_stage == "grab" and len(attempts) < 3:
+            raise OSError("Display is switching modes")
+        return module.CapturedScreen(b"image", Image.new("L", (20, 20)), "App", "app", 1)
+
+    def analyze(*args):
+        if failure_stage == "analyze" and len(attempts) < 3:
+            raise ValueError("Vision model temporarily unavailable")
+        return "Recovered screen", None, None
+
+    def status(value):
+        statuses.append(value)
+        if value == "Vision: screen understood":
+            vision.stop()
+
+    monkeypatch.setattr(mss, "mss", Capture)
+    monkeypatch.setattr(vision, "_take_frame", take_frame)
+    monkeypatch.setattr(vision, "_analyze", analyze)
+    vision.observation_ready.connect(lambda text, captured_at: observations.append(text))
+    vision.error.connect(errors.append)
+    vision.status_changed.connect(status)
+    vision.run()
+    assert len(attempts) == 3
+    assert len(errors) == 1  # Repeated identical failures don't spam the user/log.
+    assert observations == ["Recovered screen"]
+    assert statuses[-1] == "Vision: screen understood"

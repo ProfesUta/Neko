@@ -41,6 +41,12 @@ def _qt_rect(rect):
     return Rect(rect.x(), rect.y(), rect.width(), rect.height())
 
 
+def normalize_monitor_reference(reference):
+    """Zero is the capture-library all-displays sentinel, never monitor one."""
+    value = str(reference).strip() if reference is not None else ""
+    return None if value.casefold() in ("", "0", "auto", "all", "*", "none", "null") else value
+
+
 def match_native_monitor(name, logical, scale, native):
     """QScreen.name may be a friendly model name rather than a native device ID."""
     if name in native:
@@ -74,8 +80,11 @@ class MonitorManager(QObject):
 
     def resolve(self, reference=None):
         monitors = self.snapshot()
-        if reference is None or reference == "":
+        reference = normalize_monitor_reference(reference)
+        if reference is None:
             return None
+        if reference.casefold() in ("primary", "main", "primary monitor", "main monitor"):
+            return next((monitor for monitor in monitors if monitor.primary), None)
         matches = []
         for monitor in monitors:
             if str(reference).casefold() in (monitor.id.casefold(), str(monitor.number),

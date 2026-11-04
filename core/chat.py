@@ -63,6 +63,8 @@ def build_request_messages(messages, context, screen_observation=None):
         "screen_observation": observation,
         "screen_status": context.get_screen_status(),
     }
+    if getattr(context, "spatial", None) is not None:
+        data["connected_displays"] = context.spatial.get_monitors()
     live_context = {
         "role": "system",
         "content": (
@@ -120,6 +122,12 @@ def _execute_tool(name, arguments, context, cancel_event=None):
     try:
         if not isinstance(arguments, dict):
             raise ValueError("arguments must be an object")
+        if name in ("locate_on_screen", "show_target") and "monitor_id" in arguments:
+            reference = arguments["monitor_id"]
+            # Local tool models sometimes serialize an optional display number
+            # as a JSON number/null despite the string schema.
+            if reference is None or type(reference) is int:
+                arguments = {**arguments, "monitor_id": "" if reference is None else str(reference)}
         inspect.signature(function).bind(**arguments)
         hints = get_type_hints(function)
         for key, value in arguments.items():

@@ -13,6 +13,7 @@ from enum import Enum
 from threading import Event, Lock
 
 from core.cancellation import AnyEvent, OperationCancelled, check_cancelled
+from core.monitors import normalize_monitor_reference
 from core.spatial_geometry import Rect
 from core.window_grounding import visible_parts
 from config import SPATIAL_TARGET_TTL_SECONDS
@@ -34,6 +35,10 @@ class ActionState(str, Enum):
     TELEPORTING = "teleporting"
     POINTING = "pointing"
     SPEAKING = "speaking"
+
+
+class TargetUnavailable(ValueError):
+    """Expected target lifecycle change, not a failed tool implementation."""
 
 
 def spatial_request(text):
@@ -127,6 +132,7 @@ class SpatialService:
         self._shown = None
         self._last_target = None
         self._requested_spatial = False
+        self._requested_monitor = None
         self._invalidated = False
 
     def begin_turn(self, text, cancel_event=None):
@@ -136,6 +142,7 @@ class SpatialService:
             self._turn_cancel = Event()
             self._shown = None
             self._requested_spatial = spatial_request(text)
+            self._requested_monitor = monitor_reference(text) if self._requested_spatial else None
             self._invalidated = False
             generation = self._generation
             cancellation = AnyEvent(self._turn_cancel, cancel_event or Event())
@@ -175,7 +182,8 @@ class SpatialService:
 
     def get_monitors(self):
         return {"monitors": [monitor.to_dict() for monitor in self.monitors.snapshot()],
-                "topology_revision": self.monitors.revision}
+                "topology_revision": self.monitors.revision,
+                "selection": "Monitor numbers start at 1. Use an exact ID or number; omit monitor_id to search all displays. 0/auto/all mean all displays, not the primary."}
 
     def get_visible_windows(self, cancel_event=None):
         self._require_enabled()
@@ -256,13 +264,15 @@ class SpatialService:
         if window_query:
             return {"status": "not_found", "message": "No confident visible application window matches. Show the app first, or specify its icon/control if that is what you mean.",
                     "native_status": getattr(self.grounder, "last_error", "")}
-        parents = [window for window in windows_on_monitor if not previous or window.handle == previous.window_handle]
+        parents = [window for window in windows_on_monitor if not previous or (
+            window.handle == previous.window_handle and window.pid == previous.window_pid)]
         elements = self.grounder.elements(parents, cancel_event, runtime_id=previous.runtime_id if previous else "")
         matches = []
         for item in elements:
             check_cancelled(cancel_event)
             parent = next((window for window in windows if str(window.handle) == str(item.get("handle"))), None)
-            if parent is None or (previous and parent.handle != previous.window_handle):
+            if parent is None or (previous and (parent.handle != previous.window_handle
+                                                or parent.pid != previous.window_pid)):
                 continue
             if previous and previous.runtime_id and item.get("runtime_id") != previous.runtime_id:
                 continue
@@ -321,44 +331,91 @@ class SpatialService:
         self._require_enabled()
         if not isinstance(query, str) or not query.strip() or len(query) > 1000:
             raise ValueError("Provide a short object/app/control name")
-        monitor = self.monitors.resolve(monitor_id or monitor_reference(query))
+        ticket = self._ticket("search", cancel_event)
+        check_cancelled(ticket.cancellation)
+        with self._lock:
+            check_cancelled(ticket.cancellation)
+            requested_monitor = self._requested_monitor
+            # A failed second lookup must not revive the first target at speech time.
+            self._shown = None
+            self._requested_spatial = True
+        self.dispatch(ticket)
+        reference = requested_monitor or monitor_reference(query) or normalize_monitor_reference(monitor_id)
+        try:
+            monitor = self.monitors.resolve(reference)
+        except ValueError as error:
+            return {"status": "invalid_monitor", "message": str(error), **self.get_monitors()}
         if not query_words(query):
             return {"status": "ambiguous", "message": "Which icon or object do you mean? Give its name or describe its appearance; I won't guess."}
-        ticket = self._ticket("search", cancel_event)
-        self.dispatch(ticket)
-        check_cancelled(ticket.cancellation)
         result = self._find(query, monitor, ticket.cancellation)
         check_cancelled(ticket.cancellation)
         return result
 
+    def _refresh_window(self, previous, monitor, cancellation):
+        """Keep native identity, refresh visibility/bounds, never re-search its title.
+
+        Discord/browser titles contain changing channel/page names, question stop
+        words, and even words like 'button'. They are labels, not new user intent.
+        """
+        windows = self.grounder.windows(cancellation)
+        check_cancelled(cancellation)
+        window = next((item for item in windows if item.handle == previous.window_handle
+                       and item.pid == previous.window_pid and not item.is_desktop), None)
+        if window is not None:
+            parts = [part.intersection(monitor.physical) for part in visible_parts(window.bounds, window, windows)]
+            bounds = max(parts, key=lambda part: part.area, default=None)
+            if bounds is not None and bounds.area >= 100:
+                target = self._register(window.title, bounds, "window", previous.confidence, window,
+                                        query=previous.query, monitor=monitor)
+                if target is not None:
+                    return target
+        raise TargetUnavailable("The target moved, disappeared, or became covered. Locate it again.")
+
     def _fresh(self, target_id, cancellation):
+        check_cancelled(cancellation)
         self._require_enabled()
         with self._lock:
             previous = self._targets.get(target_id)
         if previous is None:
             raise ValueError("Unknown target ID. Locate it first; arbitrary coordinates are not accepted.")
         if previous.revision != self.monitors.revision or time.monotonic() - previous.timestamp > SPATIAL_TARGET_TTL_SECONDS:
-            raise ValueError("Target expired or monitor layout changed. Locate it again.")
+            raise TargetUnavailable("Target expired or monitor layout changed. Locate it again.")
         monitor = self.monitors.resolve(previous.monitor_id)
+        if previous.source == "window":
+            return self._refresh_window(previous, monitor, cancellation)
         if previous.source == "ocr":
             reader = self.reader()
             detections = reader.locate_text(previous.label, monitor.id, cancellation) if reader else []
             matches = [item for item in detections if item["bounds"].intersection(previous.physical_box).area >= previous.physical_box.area * 0.7]
             if len(matches) != 1:
-                raise ValueError("The visual target moved or disappeared. Locate it again.")
+                raise TargetUnavailable("The visual target moved or disappeared. Locate it again.")
             item = matches[0]
             return self._register(item["label"], item["bounds"], "ocr", item["confidence"], query=previous.query, monitor=monitor)
-        result = self._find(previous.label, monitor, cancellation, previous=previous, visual=False)
+        result = self._find(previous.query or previous.label, monitor, cancellation, previous=previous, visual=False)
         if not result or result.get("status") != "found":
-            raise ValueError("The target moved, disappeared, or became covered. Locate it again.")
+            raise TargetUnavailable("The target moved, disappeared, or became covered. Locate it again.")
         with self._lock:
             return self._targets[result["target"]["target_id"]]
+
+    def _unavailable(self, ticket, message):
+        check_cancelled(ticket.cancellation)
+        with self._lock:
+            if ticket.generation != self._generation:
+                raise OperationCancelled()
+            self._invalidated = self._invalidated or self._shown is not None
+            self._shown = None
+        self.dispatch(ActionTicket("cancel", ticket.generation, ticket.cancellation))
+        return {"status": "unavailable", "message": message,
+                "instruction": "No current pointing target was confirmed. Explain that it is unavailable; do not claim to be pointing at it."}
 
     def teleport_to_target(self, target_id, placement="auto", cancel_event=None, duration_ms=None):
         if placement != "auto":
             raise ValueError("Only validated automatic placement is supported")
         ticket = self._ticket("show", cancel_event, duration_ms=duration_ms)
-        ticket.target = self._fresh(target_id, ticket.cancellation)
+        try:
+            ticket.target = self._fresh(target_id, ticket.cancellation)
+        except TargetUnavailable as error:
+            return self._unavailable(ticket, str(error))
         check_cancelled(ticket.cancellation)
         self.dispatch(ticket)
         deadline = time.monotonic() + 5
@@ -369,7 +426,7 @@ class SpatialService:
                 raise ValueError("The GUI did not confirm the pointing action. No pointing claim is safe.")
         check_cancelled(ticket.cancellation)
         if ticket.result.get("status") != "pointing":
-            raise ValueError(ticket.result.get("message", "Pointing was cancelled"))
+            return self._unavailable(ticket, ticket.result.get("message", "Pointing was cancelled"))
         with self._lock:
             if ticket.generation != self._generation:
                 raise OperationCancelled()
@@ -417,7 +474,9 @@ class SpatialService:
         if shown is None:
             return None
         try:
-            self.teleport_to_target(shown, cancel_event=cancel_event)
+            result = self.teleport_to_target(shown, cancel_event=cancel_event)
+            if result.get("status") != "pointing":
+                return unavailable
         except OperationCancelled:
             raise
         except ValueError:

@@ -1,6 +1,7 @@
 """Background awareness and question-focused, fresh local screen readings."""
 
 import json
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -260,6 +261,7 @@ class VisionWorker(QThread):
             text, _advice, answer = self._analyze(frame, question, cancellation, allow_advice=False)
             if self._monitors is not None and revision != self._monitors.revision:
                 raise ValueError("Monitor layout changed during analysis. Please ask again.")
+            self.status_changed.emit("Vision: screen understood")
             return ScreenReading(text, frame.captured_at, answer)
         finally:
             self._model_lock.release()
@@ -379,50 +381,58 @@ class VisionWorker(QThread):
         try:
             import mss
             from PIL import Image, ImageChops, ImageDraw, ImageStat
+        except ImportError as error:
+            self.error.emit(str(error))
+            return
 
-            previous_frame = None
-            last_analysis = 0.0
-            previous_source = None
-            next_capture = 0.0
-            cancellation = AnyEvent(self._stop_event, self._paused_event)
-            with mss.mss() as capture:
-                while not self._stop_event.is_set():
-                    if self.is_paused() or time.monotonic() < next_capture:
-                        self._wake_event.wait(0.2)
-                        if self._wake_event.is_set():
-                            self._wake_event.clear()
-                            next_capture = 0.0
-                        continue
+        previous_frame = None
+        last_analysis = 0.0
+        previous_source = None
+        next_capture = 0.0
+        last_error = None
+        cancellation = AnyEvent(self._stop_event, self._paused_event)
+        while not self._stop_event.is_set():
+            if self.is_paused() or time.monotonic() < next_capture:
+                self._wake_event.wait(0.2)
+                if self._wake_event.is_set():
+                    self._wake_event.clear()
+                    next_capture = 0.0
+                continue
+            try:
+                # Reopen capture handles each time: hotplug, locking the desktop,
+                # and fullscreen mode changes can invalidate MSS/GDI resources.
+                with mss.mss() as capture:
                     frame = self._take_frame(capture, Image, ImageDraw)
+                if last_error or frame.source_id != previous_source or self._should_analyze(
+                    previous_frame, frame.comparison, last_analysis, ImageChops, ImageStat,
+                ):
+                    self.status_changed.emit("Vision: watching the active app")
+                    self._acquire_model(cancellation)
                     try:
-                        if frame.source_id != previous_source or self._should_analyze(
-                            previous_frame, frame.comparison, last_analysis, ImageChops, ImageStat,
-                        ):
-                            self.status_changed.emit("Vision: watching the active app")
-                            self._acquire_model(cancellation)
-                            try:
-                                text, advice, _answer = self._analyze(
-                                    frame, None, cancellation, self._advice_enabled.is_set(),
-                                )
-                            finally:
-                                self._model_lock.release()
-                            if not cancellation.is_set():
-                                self.observation_ready.emit(text, frame.captured_at)
-                                previous_frame = frame.comparison
-                                previous_source = frame.source_id
-                                last_analysis = time.monotonic()
-                                self.status_changed.emit("Vision: screen understood")
-                                if advice and self._advice_enabled.is_set() and advice.is_fresh():
-                                    self.advice_ready.emit(advice)
-                    except OperationCancelled:
-                        pass
-                    except Exception as error:
-                        if not self._stop_event.is_set():
-                            self.error.emit(str(error))
-                    next_capture = time.monotonic() + self.interval_seconds
-        except Exception as error:
-            if not self._stop_event.is_set():
-                self.error.emit(str(error))
+                        text, advice, _answer = self._analyze(
+                            frame, None, cancellation, self._advice_enabled.is_set(),
+                        )
+                    finally:
+                        self._model_lock.release()
+                    if not cancellation.is_set():
+                        self.observation_ready.emit(text, frame.captured_at)
+                        previous_frame = frame.comparison
+                        previous_source = frame.source_id
+                        last_analysis = time.monotonic()
+                        last_error = None
+                        self.status_changed.emit("Vision: screen understood")
+                        if advice and self._advice_enabled.is_set() and advice.is_fresh():
+                            self.advice_ready.emit(advice)
+            except OperationCancelled:
+                pass
+            except Exception as error:
+                if not self._stop_event.is_set():
+                    message = f"{type(error).__name__}: {error}"
+                    if message != last_error:
+                        logging.warning("Screen awareness will retry: %s", message)
+                        self.error.emit(message)
+                    last_error = message
+            next_capture = time.monotonic() + self.interval_seconds
 
     def _capture(self, capture, image_module, draw_module):
         with self._geometry_lock:

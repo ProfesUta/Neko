@@ -231,6 +231,14 @@ class CharacterSprite(QWidget):
                              (left_hand.x(), left_hand.y()), (right_hand.x(), right_hand.y()),
                              (window.width(), window.height()))
 
+    def pointing_hand_global(self, window):
+        """Match the rendered pose, including mirroring, feet alignment and scale."""
+        if self._pointing is None:
+            return None
+        metrics = self.pointing_metrics(window)
+        hand = metrics.left_hand if self._pointing == "left" else metrics.right_hand
+        return QPointF(window.mapToGlobal(QPoint(0, 0))) + QPointF(*hand)
+
     def draw_character(self, painter, target):
         if self._pointing:
             painter.save()

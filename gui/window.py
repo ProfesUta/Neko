@@ -193,9 +193,6 @@ class CapriWindow(QMainWindow):
         self.chat_panel.show()
         self.chat_panel.raise_()
         self.chat_panel.activateWindow()
-        character_center = self.sprite.mapToGlobal(self.sprite.rect().center())
-        if self.chat_panel.frameGeometry().center().x() < character_center.x():
-            self.sprite.flash_expression("pointingLeft", 1200)
         self._update_vision_geometry()
 
     def _conversation_worker(self):
@@ -516,6 +513,9 @@ class CapriWindow(QMainWindow):
         self.vision_worker.set_paused(self._inference_busy)
         if not self._vision_error:
             self.vision_button.setText("VISION PAUSED" if self._inference_busy else "VISION ON")
+        else:
+            self.vision_button.setToolTip(f"Screen awareness will retry: {self._vision_error}")
+            return
         self.vision_button.setToolTip(
             "Paused while Capri processes your request."
             if self._inference_busy else
@@ -539,10 +539,12 @@ class CapriWindow(QMainWindow):
     def handle_vision_status(self, status):
         if self.vision_worker is None or self.vision_worker.isInterruptionRequested():
             return
-        self._vision_error = None
+        if status == "Vision: screen understood":
+            self._vision_error = None
         self._sync_vision()
         self._render_status()
-        self.vision_button.setToolTip(f"{status}. Screen images stay local and are not saved.")
+        if not self._vision_error:
+            self.vision_button.setToolTip(f"{status}. Screen images stay local and are not saved.")
 
     def handle_vision_error(self, error):
         if self.vision_worker is None or self.vision_worker.isInterruptionRequested():

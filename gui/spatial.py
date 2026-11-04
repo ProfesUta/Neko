@@ -5,13 +5,14 @@ import weakref
 from threading import Event, Thread
 
 from PySide6.QtCore import QElapsedTimer, QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QPen
+from PySide6.QtGui import QColor, QGuiApplication, QPainterPath, QPen, QTransform
 
 import config
 from core.spatial import ActionState, MovementIntent
 from core.spatial_geometry import Rect, place_beside
 from core.window_grounding import visible_parts
 from gui.teleport import LightningOverlay
+from gui.target_lightning import TargetLightning
 
 
 class TargetHighlight(QObject):
@@ -25,6 +26,10 @@ class TargetHighlight(QObject):
         self._screen = None
         self._clock = QElapsedTimer()
         self._duration = 0
+        self.beam = None
+        self._channel = False
+        self._endpoint = None
+        self._body = QPainterPath()
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
@@ -39,9 +44,10 @@ class TargetHighlight(QObject):
             return (self._overlay,)
         return ()
 
-    def show_target(self, target, monitor, duration_ms=None):
+    def show_target(self, target, monitor, duration_ms=None, *, channel=False):
         self.clear()
-        if not config.TARGET_HIGHLIGHT_ENABLED:
+        self._channel = channel and config.TARGET_LIGHTNING_ENABLED
+        if not config.TARGET_HIGHLIGHT_ENABLED and not self._channel:
             return
         screen = next((screen for screen in QGuiApplication.screens()
                        if screen.geometry() == QRect(round(monitor.logical.x), round(monitor.logical.y),
@@ -57,11 +63,9 @@ class TargetHighlight(QObject):
             self._screen = screen
         box = target.bounding_box
         self.rect = QRectF(box.x, box.y, box.width, box.height).adjusted(-4, -4, 4, 4)
-        viewport = self.rect.adjusted(-5, -5, 5, 5).toAlignedRect().intersected(screen.geometry())
-        if viewport.isEmpty():
+        self._endpoint = self.rect.center()
+        if not self._update_geometry():
             return
-        self._overlay.viewport = viewport
-        self._overlay.setGeometry(viewport)
         self._duration = max(200, min(10000, duration_ms or config.TARGET_HIGHLIGHT_DURATION_MS))
         self._clock.start()
         self._overlay.show()
@@ -70,10 +74,48 @@ class TargetHighlight(QObject):
         self._timer.start()
         self.changed.emit()
 
+    def _update_geometry(self):
+        if self._channel:
+            hand = self.owner.sprite.pointing_hand_global(self.owner)
+            if hand is None:
+                self.clear()
+                return False
+            if self.beam is None or self.beam.start != hand or self.beam.end != self._endpoint:
+                self.beam = TargetLightning(hand, self._endpoint, config.TARGET_LIGHTNING_INTENSITY)
+                rect = self.owner._sprite_screen_rect()
+                transform = QTransform()
+                transform.translate(rect.x(), rect.y())
+                transform.scale(rect.width(), rect.height())
+                shape = self.owner.sprite.teleport_silhouette()
+                self._body = transform.map(shape.path) if shape else QPainterPath()
+        bounds = self.rect.adjusted(-5, -5, 5, 5)
+        if self.beam is not None:
+            bounds = bounds.united(self.beam.bounds)
+        viewport = bounds.toAlignedRect().intersected(self._screen.geometry())
+        if viewport.isEmpty():
+            self.clear()
+            return False
+        if viewport != self._overlay.viewport:
+            self._overlay.viewport = viewport
+            self._overlay.setGeometry(viewport)
+            self.changed.emit()
+        return True
+
     def now_ms(self):
         return self._clock.elapsed() if self._clock.isValid() else 0
 
     def paint(self, painter, viewport):
+        painter.save()
+        outside = QPainterPath()
+        outside.addRect(viewport)
+        painter.setClipPath(outside.subtracted(self._body), Qt.ClipOperation.IntersectClip)
+        if self.beam is not None:
+            self.beam.paint(painter, self.now_ms())
+        if config.TARGET_HIGHLIGHT_ENABLED and self.now_ms() < self._duration:
+            self._paint_outline(painter)
+        painter.restore()
+
+    def _paint_outline(self, painter):
         alpha = min(1, max(0, (self._duration - self.now_ms()) / 250))
         color = QColor("#FF0033")
         color.setAlpha(round(240 * alpha))
@@ -92,13 +134,19 @@ class TargetHighlight(QObject):
             painter.drawLine(corner, end_y)
 
     def _tick(self):
-        if self.now_ms() >= self._duration:
+        if self._channel:
+            if self._update_geometry():
+                self._overlay.update()
+        elif self.now_ms() >= self._duration:
             self.clear()
         elif self._overlay:
             self._overlay.update()
 
     def clear(self):
         self._timer.stop()
+        self._channel = False
+        self.beam = None
+        self._body = QPainterPath()
         if self._overlay:
             self._overlay.hide()
         self.changed.emit()
@@ -251,7 +299,7 @@ class MovementCoordinator(QObject):
         self._pointed_at = time.monotonic()
         self._hold.stop()
         self._expires.start(ticket.duration_ms or config.SPATIAL_POINTING_MAX_MS)
-        self.highlight.show_target(target, monitor)
+        self.highlight.show_target(target, monitor, channel=True)
         self._watch.start()
         ticket.result = {"status": "pointing", "target": target.to_dict(), "monitor_number": monitor.number,
                          "direction": placement.direction, "placement": {"x": placement.x, "y": placement.y},
