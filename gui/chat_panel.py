@@ -1,6 +1,7 @@
 """A modeless text conversation beside the desktop companion."""
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QVBoxLayout,
@@ -24,6 +25,7 @@ class ChatPanel(QDialog):
         title.setObjectName("chatTitle")
         layout.addWidget(title)
         self.transcript = QPlainTextEdit()
+        self._partial_block = None
         self.transcript.setReadOnly(True)
         self.transcript.setMaximumBlockCount(1000)
         self.transcript.setAccessibleName("Conversation history")
@@ -64,7 +66,24 @@ class ChatPanel(QDialog):
 
     def append_message(self, speaker, text):
         # Plain text prevents model output from executing HTML or loading URLs.
+        if speaker == "Capri" and self._partial_block is not None:
+            self.show_partial(text)
+            self._partial_block = None
+            self.transcript.appendPlainText("")
+            return
+        self._partial_block = None
         self.transcript.appendPlainText(f"{speaker}\n{text}\n")
+        bar = self.transcript.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def show_partial(self, text):
+        if self._partial_block is None:
+            self.transcript.appendPlainText("Capri\n")
+            self._partial_block = self.transcript.document().lastBlock()
+        cursor = QTextCursor(self.transcript.document())
+        cursor.setPosition(self._partial_block.position())
+        cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+        cursor.insertText(text)
         bar = self.transcript.verticalScrollBar()
         bar.setValue(bar.maximum())
 

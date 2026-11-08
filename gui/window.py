@@ -25,7 +25,7 @@ from gui.sprites import CharacterSprite
 from gui.teleport import TeleportEffects, clamp_to_displays
 from gui.spatial import MovementCoordinator
 from gui.vision import VisionWorker
-from gui.workers import AdviceWorker, ChatWorker, VoiceWorker
+from gui.workers import AdviceWorker, ChatWorker, VoiceWarmupWorker, VoiceWorker
 
 
 class CapriWindow(QMainWindow):
@@ -34,6 +34,8 @@ class CapriWindow(QMainWindow):
         self.messages = messages
         self.context = context
         self.voice_worker = None
+        self.voice_warmup_worker = None
+        self._voice_preload_status = "Voice models load when enabled"
         self.chat_worker = None
         self.vision_worker = None
         self.advice_worker = None
@@ -103,6 +105,9 @@ class CapriWindow(QMainWindow):
         self._movement_timer = QTimer(self)
         self._movement_timer.timeout.connect(self._move_pet)
         self._movement_timer.start(PET_MOVE_INTERVAL_MS)
+        self._live_status_timer = QTimer(self)
+        self._live_status_timer.timeout.connect(self._sync_vision)
+        self._live_status_timer.start(1000)
         self._shortcuts = []
         for sequence, action in (
             ("Ctrl+J", self.toggle_chat), ("Ctrl+M", self.toggle_voice),
@@ -118,6 +123,34 @@ class CapriWindow(QMainWindow):
             self.start_vision()
         else:
             self._render_status()
+        if config.VOICE_PRELOAD_ON_STARTUP:
+            self.start_voice_preload()
+
+    def start_voice_preload(self):
+        if self._closing or self.voice_warmup_worker is not None:
+            return
+        self.voice_warmup_worker = VoiceWarmupWorker()
+        self.voice_warmup_worker.status_changed.connect(self.handle_voice_preload_status)
+        self.voice_warmup_worker.warning.connect(self.handle_voice_preload_warning)
+        self.voice_warmup_worker.finished.connect(self.voice_preload_finished)
+        self.handle_voice_preload_status("Preparing voice models")
+        self.voice_warmup_worker.start()
+
+    def handle_voice_preload_status(self, status):
+        self._voice_preload_status = status
+        if not self._closing:
+            self._sync_controls()
+
+    def handle_voice_preload_warning(self, message):
+        logging.warning("%s", message)
+        self.handle_voice_preload_status(message)
+
+    def voice_preload_finished(self):
+        worker = self.voice_warmup_worker
+        self.voice_warmup_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._finish_close_if_ready()
 
     def setup_ui(self):
         central = QWidget(self)
@@ -206,6 +239,7 @@ class CapriWindow(QMainWindow):
         worker.status_changed.connect(self.handle_voice_status)
         worker.user_text.connect(self.handle_user_text)
         worker.response_ready.connect(self.handle_response)
+        worker.response_partial.connect(self.handle_partial_response)
         worker.tool_result.connect(self.handle_tool_result)
         worker.inference_active.connect(self.handle_inference_active)
         worker.error.connect(self.handle_error)
@@ -289,6 +323,8 @@ class CapriWindow(QMainWindow):
         busy = self._conversation_worker() is not None
         self.voice_button.setChecked(self.voice_worker is not None)
         self.voice_button.setText("MIC ON" if self.voice_worker is not None else "MIC OFF")
+        self.voice_button.setToolTip("Microphone enabled. Click to turn it off." if self.voice_worker is not None
+                                     else f"Microphone off. {self._voice_preload_status}. Click to enable it.")
         self.voice_button.setEnabled(self.chat_worker is None and not self._stopping and not self._closing)
         self.stop_button.setEnabled(busy and not self._stopping)
         user_busy = self.voice_worker is not None or self.chat_worker is not None or self._pending_action is not None
@@ -309,6 +345,10 @@ class CapriWindow(QMainWindow):
     def handle_response(self, text):
         self.chat_panel.append_message("Capri", text)
         self._celebrate_reply = self.chat_worker is not None
+
+    def handle_partial_response(self, text):
+        if not self._closing and not self._stopping and self.sender() is self._conversation_worker():
+            self.chat_panel.show_partial(text)
 
     def handle_tool_result(self, name, result):
         preview = result[:1600]
@@ -383,7 +423,7 @@ class CapriWindow(QMainWindow):
             activity = "speechDetected"
         elif normalized.startswith("listen"):
             activity = "listening"
-        elif normalized.startswith(("load", "look", "transcrib", "think", "process", "using")):
+        elif normalized.startswith(("load", "look", "locat", "transcrib", "think", "process", "using")):
             activity = "processing"
         elif normalized.startswith("speak"):
             activity = "speaking"
@@ -488,12 +528,14 @@ class CapriWindow(QMainWindow):
             VISION_MAX_IMAGE_SIZE, VISION_CHANGE_THRESHOLD, follow_foreground=True,
         )
         self.vision_worker.set_monitor_manager(self.monitor_manager)
+        self.vision_worker.set_league_client(self.context.league)
         self.context.set_screen_reader(self.vision_worker)
         self.vision_worker.set_advice_enabled(self._advice_enabled)
         self.vision_worker.observation_ready.connect(self.handle_observation)
         self.vision_worker.advice_ready.connect(self.handle_advice_candidate)
         self.vision_worker.status_changed.connect(self.handle_vision_status)
-        self.vision_worker.error.connect(self.handle_vision_error)
+        self.vision_worker.failure.connect(self.handle_vision_failure)
+        self.vision_worker.recovered.connect(self.handle_vision_recovery)
         self.vision_worker.finished.connect(self.vision_worker_finished)
         self.vision_button.setChecked(True)
         self._update_vision_geometry()
@@ -511,10 +553,18 @@ class CapriWindow(QMainWindow):
         if self.vision_worker is None or self.vision_worker.isInterruptionRequested():
             return
         self.vision_worker.set_paused(self._inference_busy)
+        live = self.vision_worker.live_status()
         if not self._vision_error:
-            self.vision_button.setText("VISION PAUSED" if self._inference_busy else "VISION ON")
+            self.vision_button.setText("VISION LIVE" if live.get("capturing") else
+                                      ("VISION PAUSED" if self._inference_busy else "VISION ON"))
         else:
             self.vision_button.setToolTip(f"Screen awareness will retry: {self._vision_error}")
+            return
+        if live.get("capturing"):
+            self.vision_button.setToolTip(
+                f"Live capture: {live['capture_fps']:.1f} FPS. Latest frame: {live['frame_age_seconds']:.2f}s ago. "
+                + ("Capture continues; background interpretation waits while Capri answers."
+                   if self._inference_busy else "Capri compares recent frames for changes. Interpretation is slower than capture."))
             return
         self.vision_button.setToolTip(
             "Paused while Capri processes your request."
@@ -539,20 +589,34 @@ class CapriWindow(QMainWindow):
     def handle_vision_status(self, status):
         if self.vision_worker is None or self.vision_worker.isInterruptionRequested():
             return
-        if status == "Vision: screen understood":
-            self._vision_error = None
+        self._vision_error = self.context.get_screen_status()["error"] or None
         self._sync_vision()
         self._render_status()
         if not self._vision_error:
             self.vision_button.setToolTip(f"{status}. Screen images stay local and are not saved.")
 
-    def handle_vision_error(self, error):
+    def handle_vision_failure(self, stage, error):
+        self.handle_vision_error(error, stage)
+
+    def handle_vision_recovery(self, stage):
         if self.vision_worker is None or self.vision_worker.isInterruptionRequested():
             return
-        self._vision_error = error
+        self.context.clear_screen_error(stage)
+        self._vision_error = self.context.get_screen_status()["error"] or None
+        self._sync_vision()
+        self._render_status()
+
+    def handle_vision_error(self, error, stage="analysis"):
+        if self.vision_worker is None or self.vision_worker.isInterruptionRequested():
+            return
+        previous = self._vision_error
+        self.context.set_screen_error(error, stage)
+        self._vision_error = self.context.get_screen_status()["error"] or str(error)
+        if previous != self._vision_error:
+            self.chat_panel.append_message("Vision", f"{stage.capitalize()} failed: {error}")
         self.vision_button.setText("VISION ERROR")
         self._render_status()
-        self.vision_button.setToolTip(f"Screen awareness will retry: {error}")
+        self.vision_button.setToolTip(f"Screen awareness will retry: {self._vision_error}")
 
     def vision_worker_finished(self):
         worker = self.vision_worker
@@ -835,13 +899,15 @@ class CapriWindow(QMainWindow):
         self.teleport_effects.stop()
         self.controls_popup.hide()
         self.advice_bubble.hide()
-        workers = (self.voice_worker, self.chat_worker, self.advice_worker, self.vision_worker)
+        workers = (self.voice_worker, self.chat_worker, self.advice_worker, self.vision_worker, self.voice_warmup_worker)
         if any(worker is not None and worker.isRunning() for worker in workers):
             self._closing = True
             self._movement_timer.stop()
             self.stop_current_turn()
             if self.vision_worker is not None:
                 self.stop_vision()
+            if self.voice_warmup_worker is not None:
+                self.voice_warmup_worker.stop()
             event.ignore()
             return
         self.chat_panel.close()
@@ -853,5 +919,6 @@ class CapriWindow(QMainWindow):
     def _finish_close_if_ready(self):
         if not self._closing:
             return
-        if all(worker is None for worker in (self.voice_worker, self.chat_worker, self.advice_worker, self.vision_worker)):
+        if all(worker is None for worker in (self.voice_worker, self.chat_worker, self.advice_worker,
+                                            self.vision_worker, self.voice_warmup_worker)):
             self.close()

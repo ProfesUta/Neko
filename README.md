@@ -12,23 +12,29 @@ Install [Python 3.11](https://www.python.org/downloads/) and
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ollama pull qwen2.5:32b
+ollama pull qwen3:8b
 ollama pull qwen2.5vl:7b
 .\.venv\Scripts\python.exe main.py
 ```
 
 Ollama must be running locally on `127.0.0.1:11434`. If its desktop application
 is not already running, start `ollama serve` in another terminal. The default
-32B chat model needs substantial available memory; choose another installed,
-tool-capable model with `CAPRI_MODEL` if needed. Capri does not automatically
-pull chat or vision models.
+32B tool model needs substantial available memory; choose another installed,
+tool-capable model with `CAPRI_MODEL` if needed. Ordinary conversation automatically
+selects a compact, already-installed text model (including `qwen3:8b`), falling
+back to `CAPRI_MODEL` if none is available. Set `CAPRI_CONVERSATION_MODEL` to select
+one explicitly. Capri does not automatically download models.
 
 For text chat without installing the voice stack, install
-`requirements-core.txt` instead. The GUI and screen awareness work without
-loading Whisper, Torch, or Piper. Install `requirements.txt` when adding voice.
+`requirements-core.txt` instead. The GUI and screen awareness work without the
+optional voice packages. Set `CAPRI_PRELOAD_VOICE=0` to skip voice preloading
+entirely, including on machines that have those packages installed.
+Install `requirements.txt` when adding voice.
 
 The bundled Piper voice is `assets/voices/en_US-amy-medium.onnx`, together with
 its adjacent JSON configuration. Whisper `base` downloads its model on first
-microphone use; Silero's detector is bundled in its Python package. Initial
+startup (or first microphone use if preloading is disabled); Silero's detector
+is bundled in its Python package. Initial
 model downloads need internet access. Subsequent inference uses local models.
 
 ## Controls
@@ -43,6 +49,10 @@ model downloads need internet access. Subsequent inference uses local models.
 - **MIC OFF / MIC ON** starts or stops hands-free voice mode. After each reply,
   Capri listens again. Stop voice mode before sending a typed message; one worker
   owns conversation history at a time. You can compose a draft while she is busy.
+  Capri starts with **MIC OFF**. Whisper, the voice activity detector, and Piper
+  preload in a separate background worker without recording or playing audio.
+  The MIC tooltip shows preparation status. Clicking MIC during loading shares
+  the existing load; it does not create a second copy of the models.
 - **STOP** interrupts model requests, Piper synthesis, audio playback, and active
   recording. Completed computer actions and saved facts are retained. Stopping
   voice mode also turns the microphone off. This is manual interruption; the
@@ -75,12 +85,16 @@ Change defaults in `config.py`, or set these environment variables before launch
 
 ```powershell
 $env:CAPRI_MODEL = "your-installed-tool-capable-model"
+$env:CAPRI_CONVERSATION_MODEL = "auto"  # Or an installed compact model, e.g. qwen3:8b
 $env:CAPRI_VISION_MODEL = "your-installed-vision-model"
+$env:CAPRI_VISION_CONTEXT_TOKENS = "8192"
+$env:CAPRI_VISION_MAX_CONTEXT_TOKENS = "16384"
 $env:CAPRI_VISION = "1"  # Set 0 to start with all screen reading off
 $env:CAPRI_ADVICE = "1"  # Set 0 for screen questions without unsolicited tips
-$env:CAPRI_DIRECT_SCREEN_ANSWERS = "1"  # Set 0 to always use the main chat model
+$env:CAPRI_DIRECT_SCREEN_ANSWERS = "1"  # Set 0 to pass visual context to the conversation engine
 $env:CAPRI_WHISPER_MODEL = "base"
 $env:CAPRI_WHISPER_LANGUAGE = "en"
+$env:CAPRI_PRELOAD_VOICE = "1"  # Warm voice models at startup; microphone stays OFF
 $env:CAPRI_DATA_DIR = "F:\CapriData"
 .\.venv\Scripts\python.exe main.py
 ```
@@ -88,7 +102,8 @@ $env:CAPRI_DATA_DIR = "F:\CapriData"
 There is no automatic `.env` loader. By default, existing facts remain in
 `data/memory.db`; the schema is compatible with the previous version. Facts
 persist across launches. Conversation text stays in RAM, and the most recent
-30 turns are supplied to the model. The transcript displays up to 1,000 text
+30 turns are retained for tools; compact conversation uses the latest 6 turns
+and up to 12 stored facts. The transcript displays up to 1,000 text
 blocks. Remembered facts and recent successful actions refresh on every model
 request, including requests after tool execution.
 
@@ -161,8 +176,9 @@ This writes a GIF and first/mid/final-frame PNGs under the selected output folde
 With **VISION ON**, try "Where's Discord?", "Show me the download button on
 monitor 2", "Where's the Recycle Bin icon?", or "Return to your previous position".
 Capri's tools verify the object, choose a position beside it, teleport, and point.
-The response waits for the GUI to confirm arrival. Coordinates are refreshed
-again before displaying the answer and before starting synthesized speech. If a
+The response waits for the GUI to confirm arrival. Coordinates are checked before
+arrival and before starting synthesized speech. Replies that wait for a model
+also refresh the target before displaying the answer. If a
 target disappears or its monitor disconnects, an obsolete pointing claim is
 replaced with an explanation.
 
@@ -216,6 +232,90 @@ invalidate the app. Each refresh still checks current bounds and visibility;
 closed, replaced, or fully covered targets return an `unavailable` result and
 clear pointing instead of producing a tool traceback.
 
+Clear requests such as "Where is Discord application on my screen?", "Find my
+browser", and "Show me the download button on monitor 2" go directly to verified
+spatial targeting. App-window lookups use no chat or vision model calls; Capri
+points first and gives a short local reply. Named controls can still require UI
+Automation/OCR/vision time. Compound questions and explanations keep the normal
+AI route. Ambiguous or missing targets are reported instead of guessed.
+
+Background image interpretation is paused as soon as speech starts, before
+transcription, and when a text request begins. Live capture keeps running during
+conversation. Piper is loaded once into a reusable local process at startup;
+voice mode also checks it before listening and reloads it if needed. Stop can terminate an in-progress synthesis,
+and the next reply restarts the process if needed. The process keeps the voice
+model in memory until Capri exits, without storing conversation audio permanently.
+
+Ordinary conversation, including general League strategy, streams text into chat
+and starts speaking each completed sentence while the model generates the rest.
+It uses recent conversation and available screen context without waiting for a
+new screenshot. The compact conversation model has a short reply budget and stays
+loaded for 15 minutes when memory permits. Qwen3's separate thinking mode is
+disabled on this route. Execution requests and explicit memory saves retain the
+existing tool engine. Stop cancels generation, synthesis, and queued sentences;
+the final reply is not spoken a second time.
+
+With VISION ON and League running in a match, Capri can read your own health,
+gold, level, champion, items, and score through Riot's read-only
+[Live Client Data API](https://developer.riotgames.com/docs/lol#live-client-data-api).
+Questions such as "How much gold do I have?" and "What's my health?" can answer
+directly without either model. General strategy can use those stats as context.
+The connection stays on `127.0.0.1:2999`, uses no account credentials, discards
+other players' information, and caches for only one second. Turning VISION OFF
+also disables these reads. No live data is fabricated when the game is unavailable.
+This does not reveal enemy locations, cooldowns, or whether a fight is safe.
+
+League's own-player data supplements visual analysis of the actual screenshot;
+it never replaces watching the game, minimap, and visible UI. A verified low-health
+warning can be offered before the visual model finishes. After conversation,
+background interpretation resumes after one second. A separate local game-data
+watcher checks for urgent own-health warnings once per second even while the
+visual model is busy. User speech still takes priority over tip delivery.
+
+Speed settings in `config.py`:
+
+```python
+SPATIAL_QUICK_ACTIONS_ENABLED = True  # Skip model planning for clear location requests
+TTS_PERSISTENT_ENABLED = True        # Keep Piper loaded between replies
+WHISPER_BEAM_SIZE = 1                # Faster transcription; set 5 for wider decoding search
+VOICE_SILENCE_MS = 500               # End-of-utterance wait; increase for longer natural pauses
+VOICE_PRELOAD_ON_STARTUP = True      # Preload recognition/VAD/Piper; keep MIC OFF
+CONVERSATION_MODEL = "auto"          # Or set CAPRI_CONVERSATION_MODEL=qwen3:8b
+CONVERSATION_STREAMING_ENABLED = True
+CONVERSATION_MAX_TOKENS = 256
+CONVERSATION_HISTORY_TURNS = 6
+MODEL_KEEP_ALIVE = "15m"
+LEAGUE_LIVE_DATA_ENABLED = True      # Also requires VISION ON
+LEAGUE_REQUEST_TIMEOUT_SECONDS = 0.4
+LEAGUE_CACHE_SECONDS = 1.0
+VISION_INTERVAL_SECONDS = 3
+VISION_RESUME_DELAY_SECONDS = 1
+VISION_BACKGROUND_MAX_TOKENS = 450
+VISION_QUESTION_MAX_TOKENS = 850
+VISION_CONTEXT_TOKENS = 8192          # Input images/context plus room for the answer
+VISION_MAX_CONTEXT_TOKENS = 16384     # Bounded automatic expansion after a context overflow
+VISION_LIVE_CAPTURE_ENABLED = True
+VISION_CAPTURE_FPS = 8                 # Capture target; not model reasoning FPS
+VISION_LIVE_IMAGE_SIZE = (960, 600)     # Lightweight continuous frames
+VISION_LIVE_BUFFER_SECONDS = 3
+VISION_LIVE_BUFFER_FRAMES = 24
+VISION_LIVE_BUFFER_MB = 24
+VISION_TEMPORAL_FRAMES = 2
+VISION_TEMPORAL_SPACING_SECONDS = 1
+VISION_LIVE_FRAME_MAX_AGE_SECONDS = 1
+```
+
+The console logs `Direct spatial action: pointing in ... ms (no chat model)` so
+you can measure the actual action delay on your desktop. This starts after text
+entry/transcription and includes target verification plus GUI acknowledgement.
+Speech recognition, audio-device startup, and complex model-based screen analysis
+have additional costs; those operations cannot be guaranteed instantaneous.
+`Conversation model`, `Conversation first text`, `First speech audio`, and
+`Direct League answer` logs distinguish model selection, text generation, audible
+response, and direct game-data latency. Speech timing starts after transcription;
+it does not include microphone recording or recognition time.
+`Screen analysis (question/background)` logs the actual image-analysis latency.
+
 Adjust these defaults in `config.py`, then restart:
 
 ```python
@@ -261,29 +361,63 @@ See [SPATIAL_SMOKE_TEST.md](SPATIAL_SMOKE_TEST.md) for automated coverage and li
 
 ## Screen awareness
 
-Screen awareness is enabled at startup. Ordinary typed or spoken questions trigger
+**VISION LIVE** means a continuous capture worker is running independently of
+conversation and model inference. It follows the foreground app's monitor,
+including while Capri listens, speaks, or thinks. Its tooltip reports measured
+capture FPS and the newest frame's age. Turning VISION OFF stops capture and
+clears the frame buffer. Display/app changes discard the earlier frame sequence;
+capture failures reopen the backend and retry without blocking the GUI.
+
+The vision model compares two recent frames, about one second apart, with explicit
+timestamps and source labels. It can interpret visible changes over time rather
+than receiving only one isolated image. A slow model does not accumulate a queue:
+the next analysis uses the newest available sequence. Results from an obsolete
+app/display are discarded, and large intervening scene changes suppress stale tips.
+This is continuous **capture**, with slower interpretation of selected frames;
+the current model does not understand every frame at the game's refresh rate.
+
+Screen awareness is enabled at startup. Explicit screen questions trigger
 fresh screenshots of every connected monitor, supplied together with monitor IDs,
 dimensions, and resize transforms. Explicit location requests use the spatial
 tools above and only invoke visual analysis when native grounding needs help.
+Questions about gameplay or recent changes can also receive an earlier frame from
+the active display, clearly distinguished from the current monitor images.
+Ordinary knowledge and conversation questions use cached context; they do not
+wait for a new screenshot. Requests such as "Watch my gameplay and give me tips",
+"What should I do now?", "How am I doing?", and "Any advice?" also trigger a fresh
+visual read; general questions such as "How can I improve at League?" stay on the
+fast conversation route.
+"Can you see my screen?" and "Can you watch my screen live?" are answered from
+the application's actual capture and interpretation state. Model self-descriptions
+cannot override a running feed, and a running feed is not presented as instant
+understanding when analysis is still pending.
 Straightforward screen questions are answered directly by the vision model in
 Capri's voice, avoiding an extra round through the larger chat model. Actions,
 memory requests, and questions needing broader context stay on the normal chat
 and tool path. Capri can use visible game HUDs, app dialogs, code,
-errors, web pages, and documents. If reading fails, that failure is supplied to
-the conversation model; she must not claim to see a fresh screen.
+errors, web pages, and documents. If a visual read fails, Capri reports the actual
+capture/model error without waiting for a second model. Background failures also
+reach the conversation context, and a successful retry clears the error. VISION
+OFF remains distinct from an enabled reader that is waiting or retrying.
 
-Background sampling checks the active app's monitor every 5 seconds after the
-previous analysis completes. Changed frames are analyzed, and an unchanged scene
+Continuous capture targets 8 FPS, independently of model speed. Background analysis
+checks the newest buffered frames at a minimum three-second interval between
+analysis starts. If analysis takes longer, the next check can start as soon as it
+finishes; there is no extra three-second wait. Failures back off before retrying.
+Changed frames are analyzed, and an unchanged scene
 is refreshed after 15 seconds. On Windows, Capri remembers the last external
 app while her own chat has focus, follows that app's monitor, and uses native
 physical-pixel window rectangles for masking. Elsewhere, she uses the monitor
 containing the character. Descriptions expire 60 seconds after image capture,
 not after model processing finishes.
 
-Images are resized to fit 1600 x 1000 for readable interface text. Her character,
+Explicit screen reads are resized to fit 1600 x 1000 for readable interface text;
+continuous frames fit 960 x 600 to reduce capture/encoding overhead. Her character,
 chat, controls, and advice bubble are masked. Target outlines and electrical effects
 are excluded from capture where supported, otherwise masked. Screenshots stay in RAM, are sent
-only to local Ollama, and are not saved. A short history of descriptions helps
+only to local Ollama, and are not saved. The live buffer holds at most three
+seconds, 24 frames, and 24 MB of compressed image data, whichever limit is reached
+first. It is cleared on VISION OFF and exit. A short history of descriptions helps
 interpret changes; historical observations are explicitly distinguished from
 the current image. Neither screenshots nor observations become long-term user
 memories. Screen text is data, never instructions to execute.
@@ -323,29 +457,59 @@ echo cancellation and voice interruption during playback are planned next.
 Screen history contains screen observations only. Recent user/assistant dialogue
 is supplied separately for the latest question, so an earlier screen answer is
 not recycled as a fresh observation. Background reads do not receive that dialogue.
-Background vision pauses during transcription and user-question inference; the
-focused read for that question still runs. It resumes while she listens or speaks.
+Background image inference pauses during transcription and streamed replies;
+continuous capture keeps running, and an explicitly requested visual answer still
+runs. Background inference resumes after the configured conversation delay.
 
-This is screenshot-based assistance. She has no game-state API and cannot see
-hidden enemies, unreadable UI, unseen document pages, or events between frames.
-Latency includes model loading, image analysis, and speech generation; a synthetic
-local check took about 6-8 seconds for warm image analysis and about 19 seconds
-for the first image after switching models. Busy GPUs and slower hardware can
-increase that delay. Advice arrives after analysis, so it cannot reliably guide
+Visual assistance cannot see hidden enemies, unreadable UI, unseen document pages,
+or events between frames. League's own-player API adds the limited live stats
+described above; other game assistance remains screenshot-based.
+Latency includes model loading, image analysis, and speech generation. A local
+synthetic HUD check with the installed vision model correctly read 8/100 health:
+the first question took 19.7 seconds, a subsequent background read took 4.1 seconds,
+and a separate visible-danger test produced a tip in 9.5 seconds. These are test
+images, not a live-match benchmark. Busy GPUs and model switching can increase
+that delay. Visual advice arrives after analysis, so it cannot reliably guide
 split-second reactions. Exclusive-fullscreen or protected content may not
 capture; use borderless/windowed mode if necessary. Adjust sampling, image size,
 freshness, and repeat limits in `config.py`.
 
-The configured 32B chat model took about 91 seconds in a separate local answer
-check. Direct screen answers avoid that extra call. Complex questions and tool
-requests still use `CAPRI_MODEL`, so their speed depends on your chosen chat model.
+In a separate continuous-feed check, the real model correctly identified a health
+drop from 95/100 to 8/100 across two synthetic frames in 11.4 seconds. Capture
+continued throughout, producing 85 additional frames at about 7.3 FPS and retaining
+only the bounded recent history. This verifies concurrent capture/interpretation;
+it does not benchmark actual gameplay capture, which remains dependent on Windows
+desktop access and graphics drivers.
+
+The configured 32B tool model took about 91 seconds in an earlier local answer
+check. Ordinary conversation now uses the compact streaming route, and direct
+screen answers avoid the extra chat call. Tool requests still use `CAPRI_MODEL`.
+Those historical timings do not benchmark the new conversation route; measure
+the first-text/audio logs with Ollama running on your hardware.
 
 ## Voice and troubleshooting
 
+- Vision errors show their actual reason in chat, speech, and the VISION tooltip.
+  All vision and visual-location requests explicitly reserve an 8,192-token
+  Ollama context. A confirmed context-size rejection retries once with enough
+  room for the server-reported input size, answer budget, and a small margin,
+  up to 16,384 tokens. Successful expansion is reused for later frames. Images,
+  monitor coordinates, and timeline metadata are preserved during this retry.
+  Larger context limits consume more model memory; both limits are configurable
+  using the environment variables above.
+  Capture and model-analysis failures recover independently: a healthy live feed
+  clears its old capture error even while model analysis is paused, and does not
+  hide an unresolved model error. A truncated/invalid structured model answer is
+  retried once with compact context and a bounded larger output budget; partial
+  output never becomes a tip.
+  Diagnostic failures are saved to `data/vision.log` (or `CAPRI_DATA_DIR/vision.log`),
+  with two rotating 512 KB backups. This log records error reasons, not screenshots
+  or conversation text. It is available even after the console closes.
 - Microphone input uses the system default input device at 16 kHz. Playback uses
   the system default output device. Check Windows microphone permissions and
   device selection if recording fails.
-- Whisper loads on the voice worker, with CUDA when the installed Torch build
+- Whisper loads on a background startup worker, or on demand when preloading is
+  disabled, with CUDA when the installed Torch build
   reports CUDA support and CPU/int8 otherwise. The pinned default Windows
   installation uses CPU Torch. GPU setup requires a matching CUDA-enabled
   Torch/torchaudio build and the CUDA libraries required by CTranslate2; follow
@@ -358,6 +522,8 @@ requests still use `CAPRI_MODEL`, so their speed depends on your chosen chat mod
 - If a chat model is missing, the error includes its `ollama pull` command.
   If voice dependencies are missing, the chat panel explains how to install them.
   Errors and visible answers remain in chat even if speech output fails.
+  Startup preload failures only update the console and MIC tooltip; text chat
+  stays available, and explicitly enabling voice retries preparation.
 - Application tools support Notepad, Calculator, Paint, Explorer, and Edge.
   Browser search opens Google in your browser; it does not retrieve search
   results into the model. File tools list, find, and open existing paths.
@@ -405,6 +571,10 @@ No test accesses the real microphone or captures the desktop.
 | `main.py`, `config.py` | Startup, persona, model settings and limits |
 | `core/chat.py` | Shared conversation loop, live context, tools, history |
 | `core/model_client.py`, `core/cancellation.py` | Cancellable local model requests |
+| `core/conversation.py`, `core/streaming.py` | Compact model selection, streamed text and sentence speech |
+| `core/league.py` | Read-only own-player League data, direct stat answers and game context |
+| `core/screen_access.py` | Screen capability/status replies and shared visual-context instructions |
+| `core/live_screen.py` | Continuous capture, bounded temporal frame history and recovery |
 | `core/context.py`, `core/memory_detector.py` | Recent actions, fresh screen context, fact detection |
 | `core/desktop.py`, `core/proactivity.py` | Foreground monitor, structured screen assessments, advice policy |
 | `core/monitors.py`, `core/spatial_geometry.py` | Monitor inventory, physical/logical transforms, safe placement |

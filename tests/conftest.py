@@ -16,6 +16,12 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "DATABASE", tmp_path / "memory.db")
     # Tests must never capture the real desktop or start local model inference.
     monkeypatch.setattr("gui.window.VISION_ENABLED_BY_DEFAULT", False)
+    # Existing tool/vision tests exercise the original engine; streaming and
+    # League integration tests explicitly enable their routes with fake inputs.
+    monkeypatch.setattr("config.CONVERSATION_STREAMING_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_LIVE_DATA_ENABLED", False)
+    monkeypatch.setattr("config.VISION_LIVE_CAPTURE_ENABLED", False)
+    monkeypatch.setattr("config.VOICE_PRELOAD_ON_STARTUP", False)
 
 
 @pytest.fixture(scope="session")

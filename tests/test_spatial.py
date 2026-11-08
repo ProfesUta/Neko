@@ -361,6 +361,7 @@ def test_real_tool_loop_waits_for_pointing_before_tts_and_skips_generic_screen_r
     import voice.tts as tts
     from core import chat as engine
     window, spatial, backend = gui_spatial
+    monkeypatch.setattr(config, "SPATIAL_QUICK_ACTIONS_ENABLED", False)
     monkeypatch.setattr(config, "SPATIAL_POINTING_HOLD_MS", 0)
     class Reader:
         def describe_question(self, *args):
@@ -393,6 +394,7 @@ def test_new_location_request_cancels_old_inference_and_only_new_target_moves(gu
     from core import chat as engine
     from core.cancellation import check_cancelled
     window, spatial, backend = gui_spatial
+    monkeypatch.setattr(config, "SPATIAL_QUICK_ACTIONS_ENABLED", False)
     backend.items.append(VisibleWindow(30, 40, "Browser", "chrome.exe", Rect(80, 100, 300, 300), 1))
     monkeypatch.setattr(config, "SPATIAL_POINTING_HOLD_MS", 0)
     old_started = Event()

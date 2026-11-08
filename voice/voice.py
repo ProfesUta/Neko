@@ -6,22 +6,38 @@ import sysconfig
 import time
 from collections import deque
 from pathlib import Path
+from threading import Lock
 
-from config import MAX_RECORD_SECONDS, WHISPER_LANGUAGE, WHISPER_MODEL
+from config import MAX_RECORD_SECONDS, WHISPER_BEAM_SIZE, WHISPER_LANGUAGE, WHISPER_MODEL, VOICE_SILENCE_MS
 from core.cancellation import check_cancelled
 
 SAMPLE_RATE = 16000
 VAD_CHUNK_SIZE = 512  # 32 ms at 16 kHz.
-SILENCE_DURATION_MS = 700
+SILENCE_DURATION_MS = max(200, min(2000, VOICE_SILENCE_MS))
 WAIT_TIMEOUT_SECONDS = 30
 PRE_ROLL_CHUNKS = 10
 whisper_model = None
 vad_iterator = None
 _dll_handles = []
+_model_load_lock = Lock()
 
 
 def load_models(cancel_event=None):
-    """Load on the voice thread, keeping text chat independent of audio models."""
+    """Share startup/voice loads without ever opening an input device."""
+    check_cancelled(cancel_event)
+    if whisper_model is not None and vad_iterator is not None:
+        return
+    while not _model_load_lock.acquire(timeout=0.05):
+        check_cancelled(cancel_event)
+    try:
+        check_cancelled(cancel_event)
+        if whisper_model is None or vad_iterator is None:
+            _load_models_locked(cancel_event)
+    finally:
+        _model_load_lock.release()
+
+
+def _load_models_locked(cancel_event):
     global whisper_model, vad_iterator
     check_cancelled(cancel_event)
     if os.name == "nt" and not _dll_handles:
@@ -111,7 +127,7 @@ def transcribe_audio(audio, cancel_event=None):
         return ""
     check_cancelled(cancel_event)
     segments, _info = whisper_model.transcribe(
-        audio, language=WHISPER_LANGUAGE, beam_size=5,
+        audio, language=WHISPER_LANGUAGE, beam_size=max(1, min(10, WHISPER_BEAM_SIZE)),
         condition_on_previous_text=False,
         vad_filter=True,
         no_speech_threshold=0.6,

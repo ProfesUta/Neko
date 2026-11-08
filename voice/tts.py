@@ -12,6 +12,7 @@ from pathlib import Path
 from threading import Event
 
 from config import TTS_TIMEOUT_SECONDS
+import config
 from core.cancellation import AnyEvent, DeadlineEvent, check_cancelled
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -36,10 +37,33 @@ def clean_for_speech(text: str) -> str:
 
 def _synthesize(text, output_path, cancel_event):
     check_cancelled(cancel_event)
+    if config.TTS_PERSISTENT_ENABLED:
+        _require_piper()
+        from voice.piper_session import session
+        session.request(VOICE_PATH, cancel_event, TTS_TIMEOUT_SECONDS, text=text, output=output_path)
+        return
+    _synthesize_once(text, output_path, cancel_event)
+
+
+def warm_up(cancel_event=None):
+    """Run at startup or before listening; no audio is generated or played."""
+    if config.TTS_PERSISTENT_ENABLED:
+        check_cancelled(cancel_event)
+        _require_piper()
+        from voice.piper_session import session
+        session.request(VOICE_PATH, cancel_event, TTS_TIMEOUT_SECONDS)
+
+
+def _require_piper():
     if importlib.util.find_spec("piper") is None:
         raise RuntimeError(
             "Piper speech support is not installed. Run: python -m pip install -r requirements.txt"
         )
+
+
+def _synthesize_once(text, output_path, cancel_event):
+    check_cancelled(cancel_event)
+    _require_piper()
     process = subprocess.Popen(
         [sys.executable, "-m", "piper", "--model", str(VOICE_PATH),
          "--output_file", str(output_path)],

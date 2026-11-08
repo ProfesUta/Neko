@@ -18,7 +18,9 @@ class Context:
         self._screen_observation_at = 0.0
         self._screen_observation_lock = Lock()
         self._screen_reader = None
-        self._screen_error = ""
+        self._screen_errors = {}
+        from core.league import LeagueClient
+        self.league = LeagueClient()
 
     def set_application(self, application):
         self.last_application = application
@@ -42,7 +44,7 @@ class Context:
                 return
             self._screen_observation = observation.strip()
             self._screen_observation_at = captured_at
-            self._screen_error = ""
+            self._screen_errors.pop("analysis", None)
 
     def get_screen_observation(self):
         with self._screen_observation_lock:
@@ -58,12 +60,23 @@ class Context:
             self._screen_observation = ""
             self._screen_observation_at = 0.0
 
+    def set_screen_error(self, error, stage="analysis"):
+        with self._screen_observation_lock:
+            if self._screen_reader is not None:
+                self._screen_errors[stage] = str(error)
+                self._screen_observation = ""
+                self._screen_observation_at = 0.0
+
+    def clear_screen_error(self, stage):
+        with self._screen_observation_lock:
+            self._screen_errors.pop(stage, None)
+
     def set_screen_reader(self, reader):
         with self._screen_observation_lock:
             self._screen_reader = reader
             self._screen_observation = ""
             self._screen_observation_at = 0.0
-            self._screen_error = ""
+            self._screen_errors.clear()
 
     def refresh_screen(self, question, cancel_event=None, conversation=None):
         """Called on the conversation worker, never on the GUI thread."""
@@ -83,25 +96,36 @@ class Context:
                 if reader is self._screen_reader:
                     self._screen_observation = ""
                     self._screen_observation_at = 0.0
-                    self._screen_error = str(error) or "Screen reading was stopped."
+                    self._screen_errors[getattr(error, "stage", "analysis")] = str(error) or "Screen reading was stopped."
             return
         with self._screen_observation_lock:
             if reader is self._screen_reader and not reader.isInterruptionRequested():
                 self._screen_observation = text
                 self._screen_observation_at = captured_at
-                self._screen_error = ""
+                self._screen_errors.pop("analysis", None)
                 if time.monotonic() - captured_at <= VISION_CONTEXT_MAX_AGE_SECONDS:
                     return getattr(reading, "direct_answer", None)
+
+    def pause_background_screen(self):
+        """Set cancellation directly on the asking thread, before queued GUI slots."""
+        with self._screen_observation_lock:
+            reader = self._screen_reader
+        if reader is not None and hasattr(reader, "set_paused"):
+            reader.set_paused(True)
 
     def get_screen_status(self):
         with self._screen_observation_lock:
             age = time.monotonic() - self._screen_observation_at
-            return {
+            reader = self._screen_reader
+            status = {
                 "enabled": self._screen_reader is not None,
                 "available": bool(self._screen_observation) and age <= VISION_CONTEXT_MAX_AGE_SECONDS,
                 "age_seconds": round(age, 1) if self._screen_observation else None,
-                "error": self._screen_error,
+                "error": "; ".join(self._screen_errors.values()),
+                "errors": dict(self._screen_errors),
             }
+        status["live"] = reader.live_status() if reader is not None and hasattr(reader, "live_status") else {"capturing": False}
+        return status
 
     def is_screen_source_current(self, source):
         with self._screen_observation_lock:

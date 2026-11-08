@@ -134,6 +134,7 @@ def test_voice_advice_plays_before_opening_microphone_again(monkeypatch):
     worker = VoiceWorker([], context)
     order = []
     monkeypatch.setattr(voice, "load_models", lambda cancel_event: None)
+    monkeypatch.setattr(tts, "warm_up", lambda cancel_event: None)
     monkeypatch.setattr(tts, "speak", lambda text, cancel_event, **kwargs: order.append("advice"))
     def record(*args, **kwargs):
         order.append("microphone")

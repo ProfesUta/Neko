@@ -77,15 +77,19 @@ def test_listening_allows_vision_but_inference_pauses_it(qapp):
 def test_screen_error_remains_visible_during_retry_and_clears_after_success(qapp):
     window = make_window(qapp)
     window.vision_worker = VisionWorker(5, "test", (100, 100), 2)
+    window.context.set_screen_reader(window.vision_worker)
     try:
         window.handle_vision_error("Capture unavailable")
+        assert window.context.get_screen_status()["error"] == "Capture unavailable"
         window.handle_vision_status("Vision: watching the active app")
         window.handle_inference_active(True)
         assert window._vision_error == "Capture unavailable"
         assert "Capture unavailable" in window.vision_button.toolTip()
         assert window.vision_button.text() == "VISION ERROR"
+        window.handle_observation("The browser is visible")
         window.handle_vision_status("Vision: screen understood")
         assert window._vision_error is None
+        assert window.context.get_screen_status()["error"] == ""
         assert window.vision_button.text() == "VISION PAUSED"
     finally:
         window.vision_worker = None
@@ -170,6 +174,9 @@ from main import build_messages
 from gui.window import CapriWindow
 from core import chat
 chat.request_chat = lambda **kwargs: ollama.ChatResponse(message={'role':'assistant','content':'Text works.'})
+from core import conversation
+conversation.request_chat = chat.request_chat
+conversation.conversation_model = lambda: 'test'
 app = QApplication([])
 window = CapriWindow(*build_messages())
 window.send_text('Hello')

@@ -118,3 +118,11 @@ class InteractionState:
                 now - when <= ADVICE_REPEAT_SECONDS and _same_text(text, previous)
                 for when, previous in (*self._answers, *self._spoken)
             )
+
+    def repeats_recent_fragment(self, text):
+        text = normalize(text)
+        with self._lock:
+            now = time.monotonic()
+            return any(now - when <= VOICE_REPLY_REPEAT_SECONDS
+                       and _same_text(text, previous, allow_excerpt=True)
+                       for when, previous in (*self._answers, *self._spoken))

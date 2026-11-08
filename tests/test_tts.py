@@ -24,6 +24,8 @@ def test_speech_cleaning_preserves_meaning():
 
 
 def test_stop_terminates_real_synthesis_subprocess(monkeypatch, tmp_path):
+    from voice.piper_session import session
+    session.shutdown()
     monkeypatch.setattr(tts.importlib.util, "find_spec", lambda name: object())
     real_popen = subprocess.Popen
     processes = []
@@ -72,6 +74,13 @@ def test_bundled_voice_generates_valid_audio_without_playback(tmp_path):
         assert audio.getframerate() == 22050
         assert audio.getnframes() > 1000
         assert audio.getsampwidth() == 2
+    from voice.piper_session import session
+    original = session.process
+    second = tmp_path / "second.wav"
+    tts._synthesize("Right there, chum.", second, Event())
+    assert session.process is original and original.poll() is None
+    with wave.open(str(second), "rb") as audio:
+        assert audio.getnframes() > 1000
 
 
 def test_expired_advice_never_starts_audio(monkeypatch):

@@ -33,6 +33,7 @@ def run_voice(monkeypatch, transcripts, model_answer):
     inputs = []
     lines = iter(transcripts)
     monkeypatch.setattr(voice, "load_models", lambda event: None)
+    monkeypatch.setattr(tts, "warm_up", lambda event: None)
     def record(*args, **kwargs):
         try:
             text = next(lines)

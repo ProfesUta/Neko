@@ -43,7 +43,7 @@ class TargetUnavailable(ValueError):
 
 def spatial_request(text):
     text = text.casefold().replace("’", "'")
-    return bool(re.search(r"\b(where(?:'s| is| are)|point (?:at|to)|show me|take me back|return to)\b", text)
+    return bool(re.search(r"\b(where(?:'s| is| are)|find|locate|point (?:at|to)|show me|take me back|return to)\b", text)
                 or (re.search(r"\b(icon|button|control)\b", text) and re.search(r"\b(monitor|find|locate)\b", text)))
 
 
@@ -69,6 +69,8 @@ def match_label(query, label, application=""):
     label_words = set(re.findall(r"[\w]+", label.casefold()))
     app_words = set(re.findall(r"[\w]+", application.casefold()))
     aliases = {"browser": {"chrome", "msedge", "firefox", "brave", "opera"},
+               "edge": {"msedge"}, "vscode": {"code", "vscodium"},
+               "discord": {"discord", "discordcanary", "discordptb"},
                "explorer": {"explorer"}, "settings": {"systemsettings"}}
     if len(words) == 1 and aliases.get(words[0], set()) & app_words:
         return 1.0

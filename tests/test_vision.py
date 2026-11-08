@@ -28,6 +28,47 @@ def test_scene_changes_are_compared_to_last_analyzed_frame():
     assert vision._should_analyze(previous, current, time.monotonic(), ImageChops, ImageStat)
 
 
+@pytest.mark.parametrize("first_fails", [False, True])
+def test_sampling_has_no_extra_delay_after_analysis_but_errors_back_off(monkeypatch, first_fails):
+    import mss
+    import gui.vision as module
+    clock, captures = [100.0], []
+    vision = VisionWorker(3, "test", (100, 100), 2)
+    class Wake:
+        def wait(self, duration):
+            clock[0] += duration
+        def is_set(self):
+            return False
+        def clear(self):
+            pass
+        def set(self):
+            pass
+    class Capture:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    vision._wake_event = Wake()
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(mss, "mss", Capture)
+    def take(*args):
+        captures.append(clock[0])
+        return module.CapturedScreen(b"image", Image.new("L", (20, 20), len(captures) * 50), "App", "app", clock[0])
+    def analyze(*args):
+        clock[0] += 5
+        if first_fails and len(captures) == 1:
+            raise RuntimeError("Temporary model failure")
+        return "A visual observation", None, None
+    def observe(*args):
+        if len(captures) == 2:
+            vision.stop()
+    monkeypatch.setattr(vision, "_take_frame", take)
+    monkeypatch.setattr(vision, "_analyze", analyze)
+    vision.observation_ready.connect(observe)
+    vision.run()
+    assert captures == pytest.approx([100, 108 if first_fails else 105], abs=0.21)
+
+
 def test_both_companion_and_chat_are_masked():
     vision = worker()
     vision.set_capture_geometry((0, 0, 100, 100), [(10, 10, 20, 20), (50, 50, 20, 20)])
@@ -125,7 +166,7 @@ def test_question_preempts_background_model_without_parallel_inference(monkeypat
         active[0] += 1
         max_active[0] = max(max_active[0], active[0])
         try:
-            if kwargs["options"]["num_predict"] == 700:
+            if json.loads(kwargs["messages"][-1]["content"].split("Context data: ", 1)[1].split("\nSchema:", 1)[0])["question"] is None:
                 started.set()
                 try:
                     while True:

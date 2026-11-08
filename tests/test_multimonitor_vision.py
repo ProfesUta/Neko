@@ -115,6 +115,7 @@ def test_verified_ocr_coordinates_use_original_image_size_not_model_thumbnail(mo
 def test_hotplug_during_analysis_discards_wrong_topology_result(monkeypatch):
     import mss
     import gui.vision as module
+    from core.vision_diagnostics import VisionReadError
     vision = VisionWorker(5, "vision", (400, 300), 2)
     monitors = displays()
     vision.set_monitor_manager(monitors)
@@ -123,5 +124,6 @@ def test_hotplug_during_analysis_discards_wrong_topology_result(monkeypatch):
         monitors.revision += 1
         return "obsolete", None, "obsolete"
     monkeypatch.setattr(vision, "_analyze", analyze)
-    with pytest.raises(ValueError, match="layout changed"):
+    with pytest.raises(VisionReadError, match="layout changed") as failure:
         vision.describe_question("What is on my other monitor?")
+    assert failure.value.stage == "capture"
