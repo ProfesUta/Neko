@@ -165,7 +165,7 @@ import sys
 import time
 class NoAudio(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'numpy','sounddevice','torch','torchaudio','silero_vad','faster_whisper','piper'}:
+        if fullname.split('.')[0] in {'numpy','sounddevice','torch','torchaudio','silero_vad','faster_whisper','sherpa_onnx'}:
             raise ModuleNotFoundError(fullname)
 sys.meta_path.insert(0, NoAudio())
 import ollama

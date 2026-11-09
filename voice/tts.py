@@ -1,10 +1,8 @@
-"""Piper synthesis and interruptible audio playback."""
+"""Local speech synthesis and interruptible audio playback."""
 
 import importlib.util
-import os
+import math
 import re
-import subprocess
-import sys
 import tempfile
 import time
 import wave
@@ -15,8 +13,31 @@ from config import TTS_TIMEOUT_SECONDS
 import config
 from core.cancellation import AnyEvent, DeadlineEvent, check_cancelled
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-VOICE_PATH = BASE_DIR / "assets" / "voices" / "en_US-amy-medium.onnx"
+
+def kokoro_settings(style=None):
+    try:
+        speed = float(config.KOKORO_SPEED)
+    except (TypeError, ValueError, OverflowError):
+        speed = 1.1
+    if not math.isfinite(speed):
+        speed = 1.1
+    multiplier = 1.0
+    if config.TTS_STYLE_ENABLED and isinstance(style, str):
+        multiplier = {"playful": .98, "happy": .98, "warm": 1.06,
+                      "urgent": .94, "focused": 1.0}.get(style, 1.0)
+    return {"speaker": config.KOKORO_SPEAKER_ID, "speed": max(.5, min(2.0, speed / multiplier))}
+
+
+def _require_kokoro():
+    if config.TTS_BACKEND != "kokoro":
+        raise RuntimeError(f"Unknown speech backend: {config.TTS_BACKEND}. Set CAPRI_TTS_BACKEND=kokoro.")
+    if importlib.util.find_spec("sherpa_onnx") is None:
+        raise RuntimeError("Capri's local voice runtime is missing. Run: python -m pip install -r requirements.txt")
+    from voice.kokoro_worker import validate_assets
+    try:
+        validate_assets(config.KOKORO_VOICE_DIR)
+    except ValueError as error:
+        raise RuntimeError("Capri's local voice assets are missing or incomplete. Run: python -m voice.install_capri_voice") from error
 
 
 def clean_for_speech(text: str) -> str:
@@ -28,6 +49,7 @@ def clean_for_speech(text: str) -> str:
     text = text.replace("**", "").replace("__", "").replace("`", "")
     text = re.sub(r"(?m)^\s*#{1,6}\s+", "", text)
     text = re.sub(r"\*(?:smirks|sighs|laughs|chuckles|shrugs|crosses arms|tilts head)[^*]*\*", "", text, flags=re.I)
+    text = re.sub(r"(?<!\w)\*([^\s*](?:[^*\n]*[^\s*])?)\*(?!\w)", r"\1", text)
     text = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF]", "", text)
     text = re.sub(r"<\s*3", "", text)
     text = re.sub(r"[ \t]+", " ", text)
@@ -35,65 +57,25 @@ def clean_for_speech(text: str) -> str:
     return text.strip()
 
 
-def _synthesize(text, output_path, cancel_event):
+def _synthesize(text, output_path, cancel_event, style=None):
     check_cancelled(cancel_event)
-    if config.TTS_PERSISTENT_ENABLED:
-        _require_piper()
-        from voice.piper_session import session
-        session.request(VOICE_PATH, cancel_event, TTS_TIMEOUT_SECONDS, text=text, output=output_path)
-        return
-    _synthesize_once(text, output_path, cancel_event)
+    _require_kokoro()
+    from voice.kokoro_session import session
+    try:
+        session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
+                        text=text, output=output_path, **kokoro_settings(style))
+    finally:
+        if not config.TTS_PERSISTENT_ENABLED:
+            session.shutdown()
 
 
 def warm_up(cancel_event=None):
     """Run at startup or before listening; no audio is generated or played."""
     if config.TTS_PERSISTENT_ENABLED:
         check_cancelled(cancel_event)
-        _require_piper()
-        from voice.piper_session import session
-        session.request(VOICE_PATH, cancel_event, TTS_TIMEOUT_SECONDS)
-
-
-def _require_piper():
-    if importlib.util.find_spec("piper") is None:
-        raise RuntimeError(
-            "Piper speech support is not installed. Run: python -m pip install -r requirements.txt"
-        )
-
-
-def _synthesize_once(text, output_path, cancel_event):
-    check_cancelled(cancel_event)
-    _require_piper()
-    process = subprocess.Popen(
-        [sys.executable, "-m", "piper", "--model", str(VOICE_PATH),
-         "--output_file", str(output_path)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8",
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
-    pending_input = text
-    deadline = time.monotonic() + TTS_TIMEOUT_SECONDS
-    try:
-        while True:
-            check_cancelled(cancel_event)
-            if time.monotonic() >= deadline:
-                raise RuntimeError("Speech generation took too long. Please try again.")
-            try:
-                _stdout, stderr = process.communicate(input=pending_input, timeout=0.05)
-                if process.returncode:
-                    raise RuntimeError(f"Piper failed: {stderr.strip()}")
-                return
-            except subprocess.TimeoutExpired:
-                # communicate() retains the buffered input after its first call.
-                pending_input = None
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
+        _require_kokoro()
+        from voice.kokoro_session import session
+        session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS, **kokoro_settings())
 
 
 def _play_wav(path, cancel_event, on_playback_start=None):
@@ -102,7 +84,7 @@ def _play_wav(path, cancel_event, on_playback_start=None):
 
     with wave.open(str(path), "rb") as audio:
         if audio.getsampwidth() != 2:
-            raise RuntimeError("Piper returned an unsupported audio format.")
+            raise RuntimeError("Speech engine returned an unsupported audio format.")
         data = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2")
         data = data.reshape(-1, audio.getnchannels())
         rate = audio.getframerate()
@@ -121,31 +103,76 @@ def _play_wav(path, cancel_event, on_playback_start=None):
         sd.stop()
 
 
-def speak(text: str, cancel_event=None, start_deadline=None, on_playback_start=None, before_playback=None):
-    """Cancel both synthesis and playback without waiting for the whole reply."""
+class PreparedSpeech:
+    """An owned temporary WAV that can be generated ahead of current playback."""
+
+    def __init__(self, directory, text, cancel_event, start_cancellation,
+                 on_playback_start, before_playback, settings):
+        self._directory = directory
+        self.path = Path(directory.name) / "reply.wav"
+        self.text = text
+        self._cancel_event = cancel_event
+        self._start_cancellation = start_cancellation
+        self._on_playback_start = on_playback_start
+        self._before_playback = before_playback
+        self._settings = settings
+        self._closed = self._used = False
+
+    def play(self):
+        if self._closed or self._used:
+            raise RuntimeError("Prepared speech has already been consumed")
+        self._used = True
+        check_cancelled(self._start_cancellation)
+        if self._before_playback is not None:
+            # Revalidate the target now, even if this WAV was prefetched earlier.
+            replacement = self._before_playback()
+            check_cancelled(self._start_cancellation)
+            if replacement and clean_for_speech(replacement) != self.text:
+                self.text = clean_for_speech(replacement)
+                _synthesize(self.text, self.path, self._start_cancellation, **self._settings)
+                check_cancelled(self._start_cancellation)
+        # A tip's freshness deadline applies to starting, not to finishing it.
+        if self._on_playback_start is None:
+            _play_wav(self.path, self._cancel_event)
+        else:
+            _play_wav(self.path, self._cancel_event, self._on_playback_start)
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._directory.cleanup()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+def prepare_speech(text: str, cancel_event=None, start_deadline=None, on_playback_start=None, before_playback=None, style=None):
+    """Generate without playing, keeping cancellation and temporary-file ownership."""
     check_cancelled(cancel_event)
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
-    if not VOICE_PATH.is_file():
-        raise FileNotFoundError(f"Missing Piper voice model: {VOICE_PATH}")
-    with tempfile.TemporaryDirectory(prefix="capri-speech-") as directory:
-        output = Path(directory) / "reply.wav"
-        start_cancellation = cancel_event
-        if start_deadline is not None:
-            start_cancellation = AnyEvent(cancel_event or Event(), DeadlineEvent(start_deadline))
-        _synthesize(cleaned, output, start_cancellation)
+    start_cancellation = cancel_event
+    if start_deadline is not None:
+        start_cancellation = AnyEvent(cancel_event or Event(), DeadlineEvent(start_deadline))
+    settings = {"style": style} if style is not None else {}
+    speech = PreparedSpeech(tempfile.TemporaryDirectory(prefix="capri-speech-"), cleaned,
+                            cancel_event, start_cancellation, on_playback_start, before_playback, settings)
+    try:
+        _synthesize(cleaned, speech.path, start_cancellation, **settings)
         check_cancelled(start_cancellation)
-        if before_playback is not None:
-            # Synthesis can take seconds. Reconfirm the pointing action before
-            # starting audio, and replace an obsolete 'right there' if necessary.
-            replacement = before_playback()
-            check_cancelled(start_cancellation)
-            if replacement and clean_for_speech(replacement) != cleaned:
-                _synthesize(clean_for_speech(replacement), output, start_cancellation)
-                check_cancelled(start_cancellation)
-        # Once a fresh tip starts, finish the short sentence; Stop still wins.
-        if on_playback_start is None:
-            _play_wav(output, cancel_event)
-        else:
-            _play_wav(output, cancel_event, on_playback_start)
+        return speech
+    except BaseException:
+        speech.close()
+        raise
+
+
+def speak(text: str, cancel_event=None, start_deadline=None, on_playback_start=None, before_playback=None, style=None):
+    """Generate then play; streaming callers can prepare the next utterance instead."""
+    speech = prepare_speech(text, cancel_event, start_deadline, on_playback_start, before_playback, style)
+    if speech is not None:
+        with speech:
+            speech.play()

@@ -22,6 +22,7 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.LEAGUE_LIVE_DATA_ENABLED", False)
     monkeypatch.setattr("config.VISION_LIVE_CAPTURE_ENABLED", False)
     monkeypatch.setattr("config.VOICE_PRELOAD_ON_STARTUP", False)
+    monkeypatch.setattr("config.TTS_BACKEND", "kokoro")
 
 
 @pytest.fixture(scope="session")

@@ -152,6 +152,22 @@ class CharacterSprite(QWidget):
         self.update()
         return True
 
+    def react(self, name, duration_ms=750):
+        """Briefly react during speech without changing the activity or pointing pose."""
+        name = _normalize_name(name)
+        if self._pointing or self._state not in ("idle", "speaking") or name not in self._renderers:
+            return False
+        self._expression = name
+        self._frames = (name,)
+        self._frame_index = 0
+        self._expression_timer.start(max(1, duration_ms))
+        self.update()
+        return True
+
+    def clear_reaction(self):
+        self._expression_timer.stop()
+        self._restore_activity()
+
     def _restore_activity(self):
         self._expression = None
         self._frames = (("pointingleft",) if self._pointing else

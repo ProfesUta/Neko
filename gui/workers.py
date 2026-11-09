@@ -11,6 +11,22 @@ from PySide6.QtCore import QThread, Signal
 from config import ADVICE_MAX_AGE_SECONDS
 import config
 from core.cancellation import AnyEvent, OperationCancelled, check_cancelled
+from core.companion_style import reply_delivery
+
+
+class _PreparedReply:
+    def __init__(self, speech, on_finished):
+        self.speech = speech
+        self.on_finished = on_finished
+
+    def play(self):
+        try:
+            self.speech.play()
+        finally:
+            self.on_finished()
+
+    def close(self):
+        self.speech.close()
 
 
 class VoiceWarmupWorker(QThread):
@@ -57,6 +73,7 @@ class ConversationWorker(QThread):
     user_text = Signal(str)
     response_ready = Signal(str)
     response_partial = Signal(str)
+    reaction_ready = Signal(str)
     tool_result = Signal(str, str)
     inference_active = Signal(bool)
     error = Signal(str)
@@ -76,6 +93,7 @@ class ConversationWorker(QThread):
         self._speak_reply_enabled = False
         self._turn_started = None
         self._first_audio_logged = False
+        self._question = ""
 
     def stop(self):
         self._stop_event.set()
@@ -90,6 +108,7 @@ class ConversationWorker(QThread):
         from core.screen_access import screen_capability_question, screen_status_reply
 
         started = time.monotonic()
+        self._question = text
         self._turn_started = started
         self._first_audio_logged = False
         self._spatial_response_prepared = False
@@ -155,21 +174,34 @@ class ConversationWorker(QThread):
                 and not (spatial_request(text) and needs_fresh_screen(text))):
             from core.streaming import StreamingReply
             # The callback runs only after feed; a model failure also stops audio.
-            speech = (lambda sentence: self._stream_sentence(sentence, stream.cancellation)) if self._speak_reply_enabled else None
+            speech = None
+            options = {}
+            if self._speak_reply_enabled:
+                if config.TTS_PREFETCH_ENABLED:
+                    speech = lambda prepared: prepared.play()
+                    options = {
+                        "prepare": lambda sentence: self._prepare_stream_sentence(sentence, stream.cancellation),
+                        "discard": lambda prepared: prepared.close(),
+                        "min_segment_chars": config.TTS_STREAM_MIN_CHARS,
+                    }
+                else:
+                    speech = lambda sentence: self._stream_sentence(sentence, stream.cancellation)
             stream = StreamingReply(self._stop_event, self.context.interaction, text,
-                                    self.response_partial.emit, speak=speech)
+                                    self.response_partial.emit, speak=speech, **options)
             try:
                 _trim_history(self.messages)
-                answer = converse(self.messages, self.context, self._stop_event, stream.feed, game)
+                answer = converse(self.messages, self.context, stream.cancellation, stream.feed, game)
                 if not stream.text:
                     stream.feed(answer)
                 stream.finish()
                 self._streamed_reply = True
                 return answer
-            except BaseException:
+            except BaseException as error:
                 stream.abort()
                 if stream.text and self.messages[-1].get("role") == "user":
                     self.messages.append({"role": "assistant", "content": stream.text + " [Interrupted]"})
+                if isinstance(error, OperationCancelled) and stream.error and not self._stop_event.is_set():
+                    raise stream.error from error
                 raise
         return chat(
             self.messages, self.context, speak_response=False,
@@ -199,19 +231,28 @@ class ConversationWorker(QThread):
             sentence = self.context.spatial.guard_response(sentence)
         self._speak(sentence, cancel_event=cancellation)
 
-    def _speak(self, answer, cancel_event=None, start_deadline=None):
-        from voice.tts import speak
+    def _prepare_stream_sentence(self, sentence, cancellation):
+        if self.context.spatial is not None:
+            sentence = self.context.spatial.guard_response(sentence)
+        return self._speak(sentence, cancel_event=cancellation, prepare_only=True)
+
+    def _speak(self, answer, cancel_event=None, start_deadline=None, urgent=False, prepare_only=False):
+        from voice.tts import prepare_speech, speak
 
         check_cancelled(self._stop_event)
-        self.status_changed.emit("Speaking")
+        if not prepare_only:
+            self.status_changed.emit("Speaking")
         spoken_answer = answer
+        delivery = reply_delivery(self._question, answer, urgent=urgent)
         options = {"start_deadline": start_deadline} if start_deadline is not None else {}
+        options["style"] = delivery.style
         if self.context.spatial is not None and self._spatial_generation is not None:
             def confirm_pointing():
-                nonlocal spoken_answer
+                nonlocal spoken_answer, delivery
                 replacement = self.context.spatial.prepare_response(self._stop_event)
                 if replacement and replacement != spoken_answer:
                     spoken_answer = replacement
+                    delivery = reply_delivery(self._question, replacement, urgent=urgent)
                     if self.messages and self.messages[-1].get("role") == "assistant":
                         self.messages[-1]["content"] = replacement
                     self.response_ready.emit(replacement)
@@ -221,16 +262,25 @@ class ConversationWorker(QThread):
         def started():
             nonlocal playback_started
             playback_started = True
+            self.status_changed.emit("Speaking")
             if self._turn_started is not None and not self._first_audio_logged:
                 logging.info("First speech audio: %.0f ms after transcript", (time.monotonic() - self._turn_started) * 1000)
                 self._first_audio_logged = True
             if self.context.spatial is not None and self._spatial_generation is not None:
                 self.context.spatial.playback_started(self._spatial_generation)
+            if delivery.expression and config.COMPANION_REACTIONS_ENABLED:
+                self.reaction_ready.emit(delivery.expression)
+        def finished():
+            if playback_started:
+                self.context.interaction.record_spoken(spoken_answer)
+        if prepare_only:
+            prepared = prepare_speech(answer, cancel_event=cancel_event or self._stop_event,
+                                      on_playback_start=started, **options)
+            return _PreparedReply(prepared, finished) if prepared is not None else None
         try:
             speak(answer, cancel_event=cancel_event or self._stop_event, on_playback_start=started, **options)
         finally:
-            if playback_started:
-                self.context.interaction.record_spoken(spoken_answer)
+            finished()
 
     def _play_advice(self, advice, cancel_event):
         try:
@@ -246,6 +296,7 @@ class ConversationWorker(QThread):
             self._speak(
                 advice.text, cancel_event=cancellation,
                 start_deadline=advice.captured_at + ADVICE_MAX_AGE_SECONDS,
+                urgent=True,
             )
         except OperationCancelled:
             check_cancelled(self._stop_event)
@@ -258,7 +309,7 @@ class ConversationWorker(QThread):
     def _report_error(self, error):
         logging.exception("Conversation failed")
         if isinstance(error, ModuleNotFoundError) and error.name in (
-            "numpy", "sounddevice", "torch", "faster_whisper", "silero_vad", "piper",
+            "numpy", "sounddevice", "torch", "faster_whisper", "silero_vad", "sherpa_onnx",
         ):
             self.error.emit("Voice support is not installed. Run: python -m pip install -r requirements.txt")
         else:

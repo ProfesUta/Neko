@@ -8,6 +8,7 @@ from threading import Event, Timer
 import numpy as np
 import pytest
 import sounddevice
+import config
 
 from core.cancellation import OperationCancelled
 from voice import tts
@@ -21,12 +22,21 @@ def test_speech_cleaning_preserves_meaning():
     assert "hello" in result
     assert "sighs" not in result
     assert "secret_code()" not in tts.clean_for_speech("```py\nsecret_code()\n```")
+    assert tts.clean_for_speech("That was *so* close.") == "That was so close."
+    assert tts.clean_for_speech("x * y * z") == "x * y * z"
 
 
 def test_stop_terminates_real_synthesis_subprocess(monkeypatch, tmp_path):
-    from voice.piper_session import session
+    from voice.kokoro_session import session
+    from voice.kokoro_worker import ASSET_FILES
     session.shutdown()
-    monkeypatch.setattr(tts.importlib.util, "find_spec", lambda name: object())
+    assets = tmp_path / "voice"
+    assets.mkdir()
+    for name in ASSET_FILES:
+        (assets / name).write_bytes(b"model")
+    (assets / "espeak-ng-data").mkdir()
+    monkeypatch.setattr(config, "KOKORO_VOICE_DIR", assets)
+    monkeypatch.setattr(tts, "_require_kokoro", lambda: None)
     real_popen = subprocess.Popen
     processes = []
     def sleeper(*args, **kwargs):
@@ -36,7 +46,7 @@ def test_stop_terminates_real_synthesis_subprocess(monkeypatch, tmp_path):
         )
         processes.append(process)
         return process
-    monkeypatch.setattr(tts.subprocess, "Popen", sleeper)
+    monkeypatch.setattr("voice.kokoro_session.subprocess.Popen", sleeper)
     stop = Event()
     timer = Timer(0.15, stop.set)
     timer.start()
@@ -66,21 +76,23 @@ def test_stop_halts_playback(monkeypatch, tmp_path):
     assert stopped == [True]
 
 
-@pytest.mark.skipif(importlib.util.find_spec("piper") is None, reason="Optional Piper package not installed")
-def test_bundled_voice_generates_valid_audio_without_playback(tmp_path):
+@pytest.mark.skipif(importlib.util.find_spec("sherpa_onnx") is None or not (config.KOKORO_VOICE_DIR / "model.onnx").exists(),
+                    reason="Optional Kokoro runtime or voice pack not installed")
+def test_selected_voice_generates_valid_audio_without_playback(tmp_path):
     path = tmp_path / "synthesis.wav"
     tts._synthesize("Capri is ready.", path, Event())
     with wave.open(str(path), "rb") as audio:
-        assert audio.getframerate() == 22050
+        assert audio.getframerate() == 24000
         assert audio.getnframes() > 1000
         assert audio.getsampwidth() == 2
-    from voice.piper_session import session
+    from voice.kokoro_session import session
     original = session.process
     second = tmp_path / "second.wav"
     tts._synthesize("Right there, chum.", second, Event())
     assert session.process is original and original.poll() is None
     with wave.open(str(second), "rb") as audio:
         assert audio.getnframes() > 1000
+    session.shutdown()
 
 
 def test_expired_advice_never_starts_audio(monkeypatch):

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.proactivity import AdvicePolicy
+from core.companion_style import reply_delivery
 from core.monitors import MonitorManager
 from core.spatial import SpatialService, spatial_request
 from core.window_grounding import WindowGrounder
@@ -55,6 +56,7 @@ class CapriWindow(QMainWindow):
         self._next_processing_teleport_at = 0.0
         self.teleport_effects = None
         self._celebrate_reply = False
+        self._reply_expression = None
         self._chat_positioned = False
         self._advice_enabled = ADVICE_ENABLED_BY_DEFAULT
         self._advice_policy = AdvicePolicy()
@@ -233,6 +235,7 @@ class CapriWindow(QMainWindow):
 
     def _connect_worker(self, worker, proactive=False):
         self._celebrate_reply = False
+        self._reply_expression = None
         self._last_error = None
         self._stopping = False
         self._inference_busy = not proactive
@@ -240,6 +243,7 @@ class CapriWindow(QMainWindow):
         worker.user_text.connect(self.handle_user_text)
         worker.response_ready.connect(self.handle_response)
         worker.response_partial.connect(self.handle_partial_response)
+        worker.reaction_ready.connect(self.handle_reply_reaction)
         worker.tool_result.connect(self.handle_tool_result)
         worker.inference_active.connect(self.handle_inference_active)
         worker.error.connect(self.handle_error)
@@ -344,7 +348,14 @@ class CapriWindow(QMainWindow):
 
     def handle_response(self, text):
         self.chat_panel.append_message("Capri", text)
-        self._celebrate_reply = self.chat_worker is not None
+        question = next((item.get("content", "") for item in reversed(self.messages) if item.get("role") == "user"), "")
+        self._reply_expression = reply_delivery(question, text).expression
+        self._celebrate_reply = self.chat_worker is not None and bool(self._reply_expression)
+
+    def handle_reply_reaction(self, expression):
+        if (not self._closing and not self._stopping and config.COMPANION_REACTIONS_ENABLED
+                and self.sender() is self._conversation_worker()):
+            self.sprite.react(expression, config.COMPANION_REACTION_DURATION_MS)
 
     def handle_partial_response(self, text):
         if not self._closing and not self._stopping and self.sender() is self._conversation_worker():
@@ -357,6 +368,7 @@ class CapriWindow(QMainWindow):
         self.chat_panel.append_message(f"Tool: {name}", preview)
 
     def handle_interrupted(self):
+        self.sprite.clear_reaction()
         self.chat_panel.append_message("Status", "Stopped. Completed actions are retained.")
 
     def handle_voice_status(self, status):
@@ -368,6 +380,7 @@ class CapriWindow(QMainWindow):
         self._sync_vision()
 
     def handle_error(self, error):
+        self.sprite.clear_reaction()
         self._last_error = error
         self.chat_panel.append_message("Status", f"Something failed: {error}")
         if not self._stopping:
@@ -409,8 +422,8 @@ class CapriWindow(QMainWindow):
             self.chat_panel.status.setText(self._last_error)
         else:
             self.set_status("Standby")
-            if celebrate:
-                self.sprite.flash_expression("happy", 1000)
+            if celebrate and config.COMPANION_REACTIONS_ENABLED:
+                self.sprite.flash_expression(self._reply_expression, config.COMPANION_REACTION_DURATION_MS)
         self._finish_close_if_ready()
 
     def set_status(self, status):

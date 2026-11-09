@@ -18,6 +18,9 @@ from gui.workers import ChatWorker
 @pytest.fixture(autouse=True)
 def streamed_conversation(monkeypatch):
     monkeypatch.setattr("config.CONVERSATION_STREAMING_ENABLED", True)
+    # These tests exercise the single-call speech adapter. Prefetch has separate
+    # integration tests with generation and playback controlled independently.
+    monkeypatch.setattr("config.TTS_PREFETCH_ENABLED", False)
     monkeypatch.setattr(conversation, "conversation_model", lambda: "test-chat")
 
 
