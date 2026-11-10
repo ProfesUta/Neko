@@ -14,6 +14,7 @@ from core.cancellation import OperationCancelled, check_cancelled
 from core.memory_detector import detect_memory
 from core.model_client import request_chat
 from core.screen_access import SCREEN_ACCESS_INSTRUCTIONS
+from core.response_grounding import is_proactive
 from memory.database import get_memories, remember_fact
 from tools.registry import AVAILABLE_FUNCTIONS, TOOLS
 from tools.spatial import spatial_session
@@ -63,6 +64,8 @@ def build_request_messages(messages, context, screen_observation=None):
         "recent_actions": context.get_summary(),
         "screen_observation": observation,
         "screen_status": context.get_screen_status(),
+        "league": context.league.context_for(next((item.get("content", "") for item in reversed(messages)
+                                                   if item.get("role") == "user"), "")),
     }
     if getattr(context, "spatial", None) is not None:
         data["connected_displays"] = context.spatial.get_monitors()
@@ -82,7 +85,7 @@ def build_request_messages(messages, context, screen_observation=None):
             + json.dumps(data, ensure_ascii=False)
         ),
     }
-    request = list(messages)
+    request = [item for item in messages if not is_proactive(item)]
     index = 1 if request and request[0]["role"] == "system" else 0
     request.insert(index, live_context)
     return request

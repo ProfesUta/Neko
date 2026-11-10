@@ -20,8 +20,12 @@ def isolated_memory(tmp_path, monkeypatch):
     # League integration tests explicitly enable their routes with fake inputs.
     monkeypatch.setattr("config.CONVERSATION_STREAMING_ENABLED", False)
     monkeypatch.setattr("config.LEAGUE_LIVE_DATA_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_CHAMP_SELECT_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_EVENTS_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_PROACTIVE_VOICE_ENABLED", False)
     monkeypatch.setattr("config.VISION_LIVE_CAPTURE_ENABLED", False)
     monkeypatch.setattr("config.VOICE_PRELOAD_ON_STARTUP", False)
+    monkeypatch.setattr("config.SPEAK_TYPED_REPLIES_BY_DEFAULT", False)
     monkeypatch.setattr("config.TTS_BACKEND", "kokoro")
 
 

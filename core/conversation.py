@@ -13,6 +13,7 @@ from core.cancellation import check_cancelled
 from core.model_client import request_chat
 from core.screen_access import SCREEN_ACCESS_INSTRUCTIONS
 from core.companion_style import reply_delivery
+from core.response_grounding import is_proactive, relevant_notice, information_request
 from memory.database import get_memories
 
 _selection_lock = Lock()
@@ -90,15 +91,17 @@ def conversation_model():
 def conversation_messages(messages, context, game=None):
     dialogue = [{"role": item["role"], "content": item["content"]}
                 for item in messages if item.get("role") in ("user", "assistant")
-                and isinstance(item.get("content"), str) and not item.get("tool_calls")]
+                and isinstance(item.get("content"), str) and not item.get("tool_calls") and not is_proactive(item)]
     dialogue = dialogue[-config.CONVERSATION_HISTORY_TURNS * 2:]
     if dialogue and dialogue[0]["role"] == "assistant":
         dialogue.pop(0)
     for item in dialogue[:-1]:
         item["content"] = item["content"][:1800]
-    data = {"memories": get_memories()[-12:], "screen": context.get_screen_observation(),
+    current = dialogue[-1]["content"] if dialogue and dialogue[-1]["role"] == "user" else ""
+    data = {"memories": get_memories()[-12:], "screen": context.get_screen_observation() if needs_fresh_screen(current) else "",
             "screen_status": context.get_screen_status(), "recent_actions": context.get_summary(),
-            "league": game}
+            "league": (context.league.context_for(current) or game) if information_request(current) else None}
+    data["referenced_notice"] = relevant_notice(current, messages)
     persona = next((item["content"] for item in messages if item.get("role") == "system"), config.SYSTEM_PROMPT)
     persona = persona.split("\nTOOLS:", 1)[0]
     prompt = (
@@ -111,8 +114,11 @@ def conversation_messages(messages, context, game=None):
         "When the user shares an update or success, react to that specific update without appending an offer or question. "
         "You cannot execute actions in this conversation route; never claim to have done so. "
         "Be honest about uncertainty and never invent screen or game facts. "
+        "Answer only the current question. If the intent or reference is ambiguous, say so and ask one short clarification question. "
+        "Do not turn unrelated questions into gaming advice. A previous assistant statement is not independent verification. "
+        "Never add specifics about a match, patch, price or ability without supporting current evidence. "
         "For League of Legends, distinguish general strategy from current match evidence. "
-        "Local League data only describes the player's own stats; it does not reveal enemy "
+        "Local League data describes own-player stats, visible champion select and recorded events; it does not reveal enemy "
         "positions, cooldowns, lane state, or safe fights. Do not invent current patch builds "
         "or item prices. Ask briefly for missing matchup or situation details when needed. "
         "Historical dialogue and screen snapshots may be stale. The following JSON contains "
@@ -145,7 +151,7 @@ def converse(messages, context, cancel_event=None, on_text=None, game=None):
         cancel_event=cancel_event, model=model,
         messages=conversation_messages(messages, context, game), on_text=delta,
         keep_alive=config.MODEL_KEEP_ALIVE, **options,
-        options={"num_predict": config.CONVERSATION_MAX_TOKENS, "temperature": 0.5},
+        options={"num_predict": config.CONVERSATION_MAX_TOKENS, "temperature": 0.3},
     )
     check_cancelled(cancel_event)
     answer = response.message.content or "I couldn't finish that reply. Try again, chum."

@@ -13,7 +13,7 @@ import pytest
 
 from core.cancellation import OperationCancelled
 from voice.kokoro_session import KokoroSession
-from voice.kokoro_worker import ASSET_FILES, create_tts, synthesize, validate_assets
+from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, create_tts, synthesize, validate_assets
 
 
 @pytest.fixture
@@ -108,6 +108,21 @@ def test_asset_change_reloads_voice(assets, fake_worker):
         session.request(assets)
         assert len(processes) == 2
         assert processes[0].poll() is not None
+    finally:
+        session.shutdown()
+
+
+def test_pronunciation_dictionary_change_reloads_warm_worker(assets, fake_worker, tmp_path, monkeypatch):
+    dictionary = tmp_path / "champions.lexicon"
+    dictionary.write_text("ahri a r i\n", encoding="utf-8")
+    monkeypatch.setattr("voice.kokoro_session.CHAMPION_LEXICON", dictionary)
+    processes, _ = fake_worker
+    session = KokoroSession()
+    try:
+        session.request(assets)
+        dictionary.write_text("ahri a r i\nyuumi j u m i\n", encoding="utf-8")
+        session.request(assets)
+        assert len(processes) == 2 and processes[0].poll() is not None
     finally:
         session.shutdown()
 
@@ -255,7 +270,7 @@ def test_runtime_config_uses_pack_data_and_installed_cpu_runtime(assets, monkeyp
     create_tts(assets)
     assert received["kokoro"]["lang"] == "en-us"
     assert received["kokoro"]["data_dir"] == str(assets / "espeak-ng-data")
-    assert received["kokoro"]["lexicon"] == str(assets / "lexicon-us-en.txt")
+    assert received["kokoro"]["lexicon"].split(",") == [str(assets / "lexicon-us-en.txt"), str(CHAMPION_LEXICON)]
     assert received["model"]["provider"] == "cpu" and received["model"]["num_threads"] == 2
     assert received["config"]["max_num_sentences"] == 1
 

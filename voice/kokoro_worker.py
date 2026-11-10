@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ASSET_FILES = ("model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt")
+CHAMPION_LEXICON = Path(__file__).with_name("champion-pronunciations.lexicon")
 
 
 def validate_assets(asset_dir):
@@ -53,11 +54,13 @@ def create_tts(asset_dir):
     import sherpa_onnx
 
     directory = validate_assets(asset_dir)
+    if not CHAMPION_LEXICON.is_file():
+        raise ValueError("Capri's champion pronunciation dictionary is missing")
     model = sherpa_onnx.OfflineTtsKokoroModelConfig(
         model=str(directory / "model.onnx"),
         voices=str(directory / "voices.bin"),
         tokens=str(directory / "tokens.txt"),
-        lexicon=str(directory / "lexicon-us-en.txt"),
+        lexicon=",".join((str(directory / "lexicon-us-en.txt"), str(CHAMPION_LEXICON))),
         data_dir=str(directory / "espeak-ng-data"),
         lang="en-us",
     )

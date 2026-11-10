@@ -1,6 +1,8 @@
 """Read-only own-player context from Riot's local Live Client Data API."""
 
 import math
+import asyncio
+import copy
 import re
 import time
 from threading import Lock
@@ -9,17 +11,33 @@ import httpx
 
 import config
 from core.cancellation import check_cancelled
+from core.league_events import EventTracker
+from core.league_metrics import LeagueMetrics
+from core.league_champ_select import ChampionSelectClient, local_tls
 
 BASE_URL = "https://127.0.0.1:2999/liveclientdata/"
 
 
-def league_question(text, recent=()):
+def league_question(text, recent=(), champion_names=()):
     if re.search(r"\b(league(?: of legends)?|lol|champion|summoner|jungl\w*|gank|baron|"
-                 r"dragon|cs|kda|score|gold|hp|mana|health|level|lane|farming|build|items|who am i playing)\b", text, re.I):
+                 r"kda|creep score|laning|lock(?:ed)? in|my game|my match|who am i playing)\b", text, re.I):
         return True
-    return bool(re.search(r"\b(what should i do|fight|retreat|recall|play|buy|push|wave|matchup)\b", text, re.I)
+    if re.search(r"\b(?:website|python|programming|javascript|health insurance|healthcare|recipe|spreadsheet|salary)\b", text, re.I):
+        return False
+    if re.search(r"\b(?:play|lane|build|items?|skill|ability|beat|vs|against|matchup|counter|q|w|e|r)\b", text, re.I) and any(
+           re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text, re.I)
+           for name in champion_names if isinstance(name, str) and len(name) >= 3):
+        return True
+    if re.search(r"\b(my (?:health|hp|mana|gold|kda|score|cs|level|role|position)|"
+                 r"what level am i|how much (?:health|hp|gold) do i have|what role did i get|"
+                 r"what lane did i get|champions? (?:have been |were |are )?(?:picked|banned)|"
+                 r"champion.*hover|last objective|(?:we|my team|our team).{0,18}(?:dragon|baron|herald))\b", text, re.I):
+        return True
+    # Generic words like 'build', 'level', 'health' and 'items' must not turn
+    # unrelated topics into League conversations. Only genuine user turns count.
+    return bool(re.search(r"\b(what should i do|fight|retreat|recall|play|buy|push|wave|matchup|build|items|dragon)\b", text, re.I)
                 and any(re.search(r"\b(league|champion|lol|lane)\b", item.get("content", ""), re.I)
-                        for item in recent[-6:]))
+                        for item in recent[-6:] if item.get("role") == "user"))
 
 
 def _numbers(data, names):
@@ -51,48 +69,338 @@ def own_player_snapshot(active, players, game):
 
 
 class LeagueClient:
-    def __init__(self):
+    """One background producer; cached copy-safe reads never perform network I/O."""
+    def __init__(self, metrics=None):
         self._lock = Lock()
         self._snapshot = None
         self._captured_at = 0.0
-        self._retry_at = 0.0
+        self.metrics = metrics or LeagueMetrics()
+        self.tracker = EventTracker(config.LEAGUE_EVENT_HISTORY_LIMIT)
+        self._events = ()
+        self._events_at = 0.0
+        self._events_available = False
+        self._actors = {}
+        self._own_aliases = frozenset()
+        self.on_notification = None
+        self._acknowledged_picks = set()
+        self._reacted_hovers = set()
+        self._observed_allied_picks = set()
+        self._observed_enemy_picks = set()
+        self._hover_reaction_index = 0
+        self._lock_reaction_index = 0
+        self._draft_reaction_index = 0
+        self.champ_select = ChampionSelectClient(self.metrics, self._champion_changed)
+        self._stats_lock = None
+        self._stats_completed_at = float("-inf")
+
+    @property
+    def champ_select_enabled(self):
+        return config.LEAGUE_CHAMP_SELECT_ENABLED
+
+    @property
+    def events_enabled(self):
+        return config.LEAGUE_EVENTS_ENABLED
+
+    @property
+    def stats_enabled(self):
+        return config.LEAGUE_LIVE_DATA_ENABLED
+
+    def _champion_changed(self, old, new):
+        if new.phase not in ("ChampSelect", "Unavailable"):
+            self._acknowledged_picks.clear()
+            self._reacted_hovers.clear()
+            self._observed_allied_picks.clear()
+            self._observed_enemy_picks.clear()
+        if new.phase in ("GameStart", "InProgress") and old.phase not in ("GameStart", "InProgress", "Reconnect", "Unavailable"):
+            with self._lock:
+                self.tracker.reset()
+                self._events = ()
+                self._events_available = False
+                self._snapshot = None
+                self._actors = {}
+                self._own_aliases = frozenset()
+        if new.phase not in ("GameStart", "InProgress", "Reconnect", "Unavailable"):
+            with self._lock:
+                self._snapshot = None
+        if self.on_notification:
+            from core.league_voice import HOVER_REACTIONS, LOCK_REACTIONS
+            if new.phase == "ChampSelect" and old.phase not in ("ChampSelect", "Unavailable"):
+                self._notify("champ-select", "Champion select's up. Let's see your pick.", 1, 5)
+            if (new.phase == "ChampSelect" and not new.my_pick_locked and new.my_champion
+                    and not new.my_champion.startswith("Champion #")
+                    and (new.my_champion != old.my_champion or old.phase != "ChampSelect")
+                    and new.my_champion not in self._reacted_hovers):
+                self._reacted_hovers.add(new.my_champion)
+                text = HOVER_REACTIONS[self._hover_reaction_index % len(HOVER_REACTIONS)].format(champion=new.my_champion)
+                self._hover_reaction_index += 1
+                self._notify("pick-hover", text, 1, 8, champion=new.my_champion, delay_seconds=.35)
+            if (new.phase == "ChampSelect" and new.my_pick_locked and new.my_champion
+                    and not old.my_pick_locked and (old.my_champion is not None or old.selection_known)
+                    and new.my_champion not in self._acknowledged_picks
+                    and old.phase == "ChampSelect"):
+                self._acknowledged_picks.add(new.my_champion)
+                text = LOCK_REACTIONS[self._lock_reaction_index % len(LOCK_REACTIONS)].format(champion=new.my_champion)
+                self._lock_reaction_index += 1
+                self._notify("pick-locked", text, 2, 10, champion=new.my_champion)
+        self._team_picks_changed(old, new)
+
+    def _team_picks_changed(self, old, new):
+        if new.phase != "ChampSelect" or not new.selection_known:
+            return
+        from core.league_voice import draft_pick_reaction
+
+        # The existing locked-pick lists contain no player identities. Allies
+        # include the local player; her own lock already has a separate reaction.
+        self._observed_allied_picks.update(old.allied_champions if old.phase == "ChampSelect" else ())
+        self._observed_enemy_picks.update(old.enemy_champions if old.phase == "ChampSelect" else ())
+        allied = tuple(dict.fromkeys(name for name in new.allied_champions
+                       if name not in self._observed_allied_picks and not name.startswith("Champion #")
+                       and not (new.my_pick_locked and name == new.my_champion)))
+        enemy = tuple(dict.fromkeys(name for name in new.enemy_champions
+                      if name not in self._observed_enemy_picks and not name.startswith("Champion #")))
+        self._observed_allied_picks.update(new.allied_champions)
+        self._observed_enemy_picks.update(new.enemy_champions)
+        # Bootstrap and reconnect silently: existing picks are a baseline, not
+        # fresh events. Hover lists are deliberately never used here.
+        if old.phase != "ChampSelect" or not old.selection_known or not (allied or enemy):
+            return
+        text = draft_pick_reaction(allied, enemy, self._draft_reaction_index)
+        self._draft_reaction_index += 1
+        self._notify("draft-picks", text, 1, 10, delay_seconds=.15, allied_picks=allied, enemy_picks=enemy)
+
+    def _notify(self, key, text, priority=1, lifetime=6, champion=None, delay_seconds=0,
+                allied_picks=(), enemy_picks=()):
+        if self.on_notification and config.LEAGUE_PROACTIVE_VOICE_ENABLED:
+            from core.league_voice import LeagueAnnouncement
+            started = self.metrics.start()
+            now = time.monotonic()
+            self.on_notification(LeagueAnnouncement(text, key, now, lifetime, priority,
+                                                   self.metrics.start(), self.tracker.epoch,
+                                                   champion, now + delay_seconds if delay_seconds else 0,
+                                                   allied_picks, enemy_picks))
+            self.metrics.finish("event_to_callback", started)
 
     def read(self, cancel_event=None):
         check_cancelled(cancel_event)
         with self._lock:
             now = time.monotonic()
-            if now < self._retry_at:
+            if self._snapshot is None or now - self._captured_at > max(2, config.LEAGUE_CACHE_SECONDS * 3):
                 return None
-            if self._snapshot and now - self._captured_at <= config.LEAGUE_CACHE_SECONDS:
-                return {**self._snapshot, "age_seconds": round(now - self._captured_at, 2)}
-            self._snapshot = None  # Never reuse an earlier match after a failed refresh.
+            return {**copy.deepcopy(self._snapshot), "age_seconds": round(now - self._captured_at, 2)}
+
+    def events(self):
+        with self._lock:
+            age = time.monotonic() - self._events_at
+            # A recorded ending remains answerable briefly after the API exits;
+            # it is an explicit past-match fact, never a current player snapshot.
+            if self.tracker.ended and self._events and age <= 30:
+                return self._events
+            if not self._events_available or age > max(2, config.LEAGUE_EVENT_POLL_INTERVAL * 4):
+                return ()
+            return self._events
+
+    def announcement_current(self, announcement):
+        with self._lock:
+            same_match = announcement.epoch == self.tracker.epoch
+        if announcement.event_key == "champ-select":
+            return self.champ_select.snapshot().phase == "ChampSelect"
+        if announcement.event_key in ("pick-hover", "pick-locked"):
+            snapshot = self.champ_select.snapshot()
+            return (snapshot.phase == "ChampSelect" and bool(announcement.champion)
+                    and snapshot.my_champion == announcement.champion
+                    and snapshot.my_pick_locked == (announcement.event_key == "pick-locked"))
+        if announcement.event_key == "draft-picks":
+            snapshot = self.champ_select.snapshot()
+            return (snapshot.phase == "ChampSelect" and snapshot.selection_known
+                    and bool(announcement.allied_picks or announcement.enemy_picks)
+                    and all(name in snapshot.allied_champions for name in announcement.allied_picks)
+                    and all(name in snapshot.enemy_champions for name in announcement.enemy_picks))
+        return same_match and bool(self.events())
+
+    @staticmethod
+    async def _get(client, endpoint):
+        if endpoint not in ("eventdata", "activeplayer", "playerlist", "gamestats"):
+            raise ValueError("Unsupported League endpoint")
+        response = await client.get(BASE_URL + endpoint)
+        response.raise_for_status()
+        if len(response.content) > 2_000_000:
+            raise ValueError("Oversized League response")
+        return response.json()
+
+    async def refresh_stats(self, client):
+        # Concurrent refresh callers coalesce to one in-flight request sequence.
+        if self._stats_lock is None:
+            self._stats_lock = asyncio.Lock()
+        requested = time.monotonic()
+        async with self._stats_lock:
+            if self._stats_completed_at >= requested:
+                return
             try:
-                # Riot documents a self-signed certificate on this fixed loopback
-                # endpoint. No credentials, external hosts or redirects are used.
-                with httpx.Client(verify=False, trust_env=False, follow_redirects=False,
-                                  timeout=config.LEAGUE_REQUEST_TIMEOUT_SECONDS) as client:
-                    def get(endpoint):
-                        check_cancelled(cancel_event)
-                        response = client.get(BASE_URL + endpoint)
-                        response.raise_for_status()
-                        check_cancelled(cancel_event)
-                        if len(response.content) > 2_000_000:
-                            raise ValueError("Oversized League response")
-                        return response.json()
-                    active = get("activeplayer")
-                    captured_at = time.monotonic()
-                    players = get("playerlist")
-                    game = get("gamestats")
+                game = await self._get(client, "gamestats")
+                if not isinstance(game, dict) or not _numbers(game, ("gameTime",)):
+                    raise ValueError("Missing game time")
+                with self._lock:
+                    epoch = self.tracker.epoch
+                    self.tracker.set_game_time(game.get("gameTime"))
+                    if self.tracker.epoch != epoch:
+                        self._events = ()
+                        self._events_available = False
+                        self._actors = {}
+                        self._own_aliases = frozenset()
+                        self._snapshot = None
+                    epoch = self.tracker.epoch
+                    if self.tracker.ended:
+                        self._snapshot = None
+                        return
+                active = await self._get(client, "activeplayer")
+                players = await self._get(client, "playerlist")
                 snapshot = own_player_snapshot(active, players, game)
+                if snapshot is None or not isinstance(players, list):
+                    raise ValueError("Missing active player")
+                identity = active.get("riotId") or active.get("summonerName")
+                own = next((player for player in players if isinstance(player, dict) and identity
+                            and identity in (player.get("riotId"), player.get("summonerName"))), {})
+                team = own.get("team")
+                aliases = frozenset(value for key in ("riotId", "summonerName", "riotIdGameName")
+                                    for value in (active.get(key), own.get(key))
+                                    if isinstance(value, str) and value and sum(
+                                        value in (player.get("riotId"), player.get("summonerName"), player.get("riotIdGameName"))
+                                        for player in players if isinstance(player, dict)) == 1)
+                actors = {}
+                from core.league_events import safe_text
+                for player in players[:20]:
+                    if not isinstance(player, dict):
+                        continue
+                    side = "" if not team or not player.get("team") else ("ally" if player["team"] == team else "enemy")
+                    for key in ("riotId", "summonerName", "riotIdGameName"):
+                        if isinstance(player.get(key), str):
+                            actors[player[key]] = (safe_text(player.get("championName")), side)
+                if self.tracker.epoch == epoch:
+                    relabelled = self.tracker.update_actors(actors)
+                else:
+                    relabelled = False
+                with self._lock:
+                    if not self.tracker.ended and self.tracker.epoch == epoch:
+                        self._snapshot, self._captured_at = snapshot, time.monotonic()
+                        self._actors = actors
+                        self._own_aliases = aliases
+                        if relabelled:
+                            self._events = tuple(self.tracker.history)
             except (httpx.HTTPError, ValueError, TypeError, AttributeError):
-                snapshot = None
-            check_cancelled(cancel_event)
-            if snapshot is None:
-                self._retry_at = time.monotonic() + 5
-                return None
-            self._snapshot = snapshot
-            self._captured_at = captured_at
-            return {**snapshot, "age_seconds": round(time.monotonic() - captured_at, 2)}
+                with self._lock:
+                    self._snapshot = None
+            finally:
+                self._stats_completed_at = time.monotonic()
+
+    async def poll_events(self, client):
+        started = self.metrics.start()
+        try:
+            data = await self._get(client, "eventdata")
+            now = time.monotonic()
+            # Event parsing happens outside the publication lock. This producer
+            # owns tracker mutation; readers only see the published tuple.
+            epoch = self.tracker.epoch
+            fresh = self.tracker.ingest(data, now, self._actors)
+            detected = self.metrics.start()
+            with self._lock:
+                if self.tracker.epoch != epoch:
+                    self._snapshot = None
+                    self._actors = {}
+                    self._own_aliases = frozenset()
+                if not self._events or fresh or self.tracker.epoch != epoch:
+                    self._events = tuple(self.tracker.history)
+                self._events_available, self._events_at = True, now
+                if self.tracker.ended:
+                    self._snapshot = None
+            self.metrics.finish("event_http_to_identified", started)
+            for event in fresh:
+                # Sparse acknowledgments, never automatic tactical coaching.
+                if event.name == "GameEnd":
+                    self._notify("game-end", event.describe(), 3, 10)
+                elif event.name in ("DragonKill", "BaronKill", "HeraldKill", "TurretKilled", "InhibKilled"):
+                    identity = event.event_id if event.event_id is not None else event.game_time
+                    self._notify(f"objective:{event.name}:{identity}", event.describe(), 2, 8)
+                elif event.name == "ChampionKill":
+                    identity = event.event_id if event.event_id is not None else event.game_time
+                    if event.raw_victim in self._own_aliases:
+                        self._notify(f"own-death:{identity}", "Your champion went down, chum.", 1, 10)
+                    elif event.raw_killer in self._own_aliases:
+                        self._notify(f"own-kill:{identity}", "You got a kill! Nice.", 1, 10)
+            # Includes publication and selected callback dispatch, excludes JSON
+            # parsing. Polls with no newly identified events aren't samples.
+            if fresh:
+                self.metrics.finish("event_identified_to_dispatch", detected)
+            return True
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            with self._lock:
+                self._events_available = False
+                self._snapshot = None
+            return False
+
+    async def _event_loop(self, client):
+        while True:
+            started = time.monotonic()
+            ok = await self.poll_events(client)
+            interval = max(.1, config.LEAGUE_EVENT_POLL_INTERVAL) if ok else 2.0
+            await asyncio.sleep(max(.01, interval - (time.monotonic() - started)))
+
+    async def _stats_loop(self, client):
+        while True:
+            await self.refresh_stats(client)
+            await asyncio.sleep(max(.5, config.LEAGUE_CACHE_SECONDS) if self._snapshot else 2)
+
+    async def run(self):
+        try:
+            async with httpx.AsyncClient(verify=local_tls(), trust_env=False, follow_redirects=False,
+                                         timeout=httpx.Timeout(config.LEAGUE_REQUEST_TIMEOUT_SECONDS),
+                                         limits=httpx.Limits(max_connections=2, max_keepalive_connections=2,
+                                                             keepalive_expiry=30)) as client:
+                tasks = []
+                if config.LEAGUE_EVENTS_ENABLED:
+                    tasks.append(asyncio.create_task(self._event_loop(client)))
+                if config.LEAGUE_LIVE_DATA_ENABLED:
+                    tasks.append(asyncio.create_task(self._stats_loop(client)))
+                if config.LEAGUE_CHAMP_SELECT_ENABLED:
+                    tasks.append(asyncio.create_task(self.champ_select.run()))
+                try:
+                    if tasks:
+                        await asyncio.gather(*tasks)
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            with self._lock:
+                self._snapshot = None
+                self._events_available = False
+                self._events = ()
+                self._actors = {}
+                self._own_aliases = frozenset()
+                self.tracker.reset()
+            self.champ_select.update(phase="Unavailable", clear=True)
+
+    def answer(self, text, verified_only=False):
+        started = self.metrics.start()
+        try:
+            from core.league_answers import league_answer
+            return league_answer(text, self, verified_only=verified_only)
+        finally:
+            self.metrics.finish("question_to_direct_answer", started)
+
+    def context_for(self, text):
+        if not league_question(text, champion_names=self.champ_select.names.names.values()):
+            return None
+        result = {"own_player": self.read() if self.stats_enabled else None}
+        champion = self.champ_select.snapshot()
+        if self.champ_select_enabled and champion.phase == "ChampSelect" and champion.connected:
+            result["champ_select"] = champion.summary()
+        events = self.events() if self.events_enabled else ()
+        if events:
+            # Only the recent relevant facts, never the raw event history.
+            result["recent_events"] = [{"game_time": event.game_time, "fact": event.describe()}
+                                       for event in events[-3:]]
+            result["match_ended"] = any(event.name == "GameEnd" for event in events)
+        return result if any(result.values()) else None
 
 
 def direct_league_answer(text, game):

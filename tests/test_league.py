@@ -1,4 +1,5 @@
 import httpx
+import asyncio
 import pytest
 
 from core.league import LeagueClient, direct_league_answer, own_player_snapshot
@@ -31,7 +32,6 @@ def test_snapshot_only_uses_current_players_own_data():
 
 
 def test_live_data_uses_fixed_local_gets_caches_briefly_and_clears_after_match(monkeypatch):
-    real = httpx.Client
     clock = [100.0]
     requests = []
     playing = [True]
@@ -43,15 +43,20 @@ def test_live_data_uses_fixed_local_gets_caches_briefly_and_clears_after_match(m
         if not playing[0]:
             return httpx.Response(404)
         return httpx.Response(200, json=data[request.url.path.rsplit("/", 1)[-1]])
-    monkeypatch.setattr("core.league.httpx.Client", lambda **kwargs: real(**kwargs, transport=httpx.MockTransport(handle)))
     monkeypatch.setattr("core.league.time.monotonic", lambda: clock[0])
     client = LeagueClient()
+    async def refresh():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            await client.refresh_stats(http)
+    assert client.read() is None and requests == []  # Cache reads never do I/O.
+    asyncio.run(refresh())
     assert client.read()["level"] == 8
     assert len(requests) == 3
     clock[0] += 0.5
     assert client.read()["age_seconds"] == 0.5 and len(requests) == 3
     clock[0] += 1.5
     playing[0] = False
+    asyncio.run(refresh())
     assert client.read() is None
     assert client.read() is None and len(requests) == 4
 
@@ -62,14 +67,16 @@ def test_live_data_uses_fixed_local_gets_caches_briefly_and_clears_after_match(m
     ("Who am I playing?", "You're playing Jinx, chum."),
     ("What's my score?", "3 kills, 1 death, 4 assists."),
 ])
-def test_league_stats_bypass_both_models_and_screenshot(question, answer, monkeypatch):
+def test_league_stats_check_current_frame_without_model_inference(question, answer, monkeypatch):
     from core.context import Context
     from gui.workers import ChatWorker
     import config
     monkeypatch.setattr(config, "LEAGUE_LIVE_DATA_ENABLED", True)
     monkeypatch.setattr(config, "CONVERSATION_STREAMING_ENABLED", True)
     context = Context()
-    context.set_screen_reader(object())
+    from types import SimpleNamespace
+    checks = []
+    context.set_screen_reader(SimpleNamespace(check_screen=lambda *args: checks.append(True) or {"status": "checked"}))
     data = payloads()
     game = own_player_snapshot(data["activeplayer"], data["playerlist"], data["gamestats"])
     monkeypatch.setattr(context.league, "read", lambda *args: game)
@@ -80,7 +87,7 @@ def test_league_stats_bypass_both_models_and_screenshot(question, answer, monkey
     worker.response_ready.connect(responses.append)
     worker.error.connect(errors.append)
     worker.run()
-    assert not errors and responses == [answer]
+    assert not errors and responses == [answer] and checks == [True]
 
 
 @pytest.mark.parametrize("health", [450, 80])
@@ -137,19 +144,21 @@ def test_background_vision_resumes_promptly_after_conversation(monkeypatch):
     assert worker._resume_after == 101
 
 
-def test_vision_off_prevents_game_data_reads(monkeypatch):
-    import ollama
+def test_league_answers_work_with_vision_off(monkeypatch):
     from core.context import Context
     from gui.workers import ChatWorker
     monkeypatch.setattr("config.LEAGUE_LIVE_DATA_ENABLED", True)
     monkeypatch.setattr("config.CONVERSATION_STREAMING_ENABLED", True)
     context = Context()
-    monkeypatch.setattr(context.league, "read", lambda *args: pytest.fail("VISION is OFF"))
-    monkeypatch.setattr("core.conversation.conversation_model", lambda: "test-chat")
-    monkeypatch.setattr("core.conversation.request_chat", lambda **kwargs: ollama.ChatResponse(
-        message={"role": "assistant", "content": "Turn VISION on so I can read your health."}))
+    data = payloads()
+    game = own_player_snapshot(data["activeplayer"], data["playerlist"], data["gamestats"])
+    monkeypatch.setattr(context.league, "read", lambda *args: game)
+    monkeypatch.setattr("core.conversation.request_chat", lambda **kwargs: pytest.fail("Unexpected model"))
     errors = []
+    answers = []
     worker = ChatWorker([], context, "What's my health?")
     worker.error.connect(errors.append)
+    worker.response_ready.connect(answers.append)
     worker.run()
-    assert not errors
+    assert not errors and "You have 450 of 1000 health" in answers[0]
+    assert "couldn't also check the screen" in answers[0]

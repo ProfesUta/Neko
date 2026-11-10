@@ -15,7 +15,7 @@ from queue import Empty, Queue
 from threading import Lock, Thread
 
 from core.cancellation import check_cancelled
-from voice.kokoro_worker import ASSET_FILES, validate_assets, validate_request, validate_settings
+from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, validate_assets, validate_request, validate_settings
 
 
 class KokoroSession:
@@ -85,7 +85,7 @@ class KokoroSession:
 
     def _resources(self, asset_dir):
         directory = validate_assets(asset_dir)
-        assets = [directory / name for name in ASSET_FILES] + [directory / "espeak-ng-data"]
+        assets = [directory / name for name in ASSET_FILES] + [directory / "espeak-ng-data", CHAMPION_LEXICON]
         return assets, [str(directory)]
 
     def _prepare_locked(self, asset_dir, cancellation, deadline):

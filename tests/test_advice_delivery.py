@@ -43,6 +43,7 @@ def test_advice_is_spoken_and_shown_without_activating_chat(qapp, wait_until, mo
     window = setup_window(qapp)
     try:
         advice = candidate()
+        assert window.voice_worker is None and window.voice_button.text() == "MIC OFF"
         window.handle_advice_candidate(advice)
         wait_until(lambda: window.advice_worker is None)
         assert spoken == [advice.text]
@@ -54,6 +55,100 @@ def test_advice_is_spoken_and_shown_without_activating_chat(qapp, wait_until, mo
         assert window.advice_worker is None
         assert len(spoken) == 1
     finally:
+        cleanup(window, wait_until)
+
+
+def test_notice_survives_the_muted_listener_finishing(qapp, wait_until, monkeypatch):
+    spoken = []
+    monkeypatch.setattr(tts, "speak", lambda text, **kwargs: spoken.append(text))
+    window = setup_window(qapp)
+    listener = VoiceWorker(window.messages, window.context)
+    listener.mute_microphone()
+    window.voice_worker = listener  # The previous listener has not emitted finished yet.
+    try:
+        advice = candidate()
+        window.handle_advice_candidate(advice)
+        assert window._deferred_screen_advice == advice and not spoken
+        assert window._pending_advice is None
+        window.voice_worker = None
+        window._deliver_screen_advice()
+        wait_until(lambda: window.advice_worker is None)
+        assert spoken == [advice.text] and window.voice_worker is None
+    finally:
+        window.voice_worker = None
+        cleanup(window, wait_until)
+
+
+def test_distinct_notice_waits_for_current_notice_without_overlapping_audio(qapp, wait_until, monkeypatch):
+    started, release = Event(), Event()
+    spoken = []
+    def speak(text, cancel_event, **kwargs):
+        spoken.append(text)
+        if len(spoken) == 1:
+            started.set()
+            while not release.wait(.005):
+                check_cancelled(cancel_event)
+    monkeypatch.setattr(tts, "speak", speak)
+    window = setup_window(qapp)
+    try:
+        window.handle_advice_candidate(candidate())
+        wait_until(started.is_set)
+        second = ScreenAdvice("Your download has completed.", "download-complete", "File is ready", "game", time.monotonic())
+        window.handle_advice_candidate(second)
+        assert window._deferred_screen_advice == second and len(spoken) == 1
+        # Skip wall-clock cooldown; playback ownership is what this test exercises.
+        window._advice_policy._last_delivered -= 10
+        release.set()
+        wait_until(lambda: window.advice_worker is None and len(spoken) == 2)
+        assert spoken == [candidate().text, second.text]
+    finally:
+        release.set()
+        cleanup(window, wait_until)
+
+
+def test_expired_deferred_notice_is_dropped(qapp, wait_until, monkeypatch):
+    monkeypatch.setattr(tts, "speak", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Expired notice spoke")))
+    window = setup_window(qapp)
+    try:
+        window._deferred_screen_advice = ScreenAdvice("Old notice", "old", "Old evidence", "game", time.monotonic() - 60)
+        window._deliver_screen_advice()
+        assert window._deferred_screen_advice is None and window.advice_worker is None
+    finally:
+        cleanup(window, wait_until)
+
+
+def test_enabling_microphone_does_not_cut_off_a_spoken_notice(qapp, wait_until, monkeypatch):
+    speaking, release, listening = Event(), Event(), Event()
+    completed = []
+    def speak(text, cancel_event, **kwargs):
+        speaking.set()
+        while not release.wait(.005):
+            check_cancelled(cancel_event)
+        check_cancelled(cancel_event)
+        completed.append(text)
+    def record(cancel_event, **kwargs):
+        listening.set()
+        while True:
+            check_cancelled(cancel_event)
+            cancel_event.wait(.01)
+    monkeypatch.setattr(tts, "speak", speak)
+    monkeypatch.setattr(tts, "warm_up", lambda *args: None)
+    monkeypatch.setattr(voice, "load_models", lambda *args: None)
+    monkeypatch.setattr(voice, "record_until_silence", record)
+    window = setup_window(qapp)
+    try:
+        window.handle_advice_candidate(candidate())
+        wait_until(speaking.is_set)
+        window.start_voice()
+        assert not window.advice_worker._stop_event.is_set()
+        assert not listening.is_set()
+        release.set()
+        wait_until(listening.is_set)
+        assert completed == [candidate().text]
+        window.stop_voice()
+        wait_until(lambda: window.voice_worker is None)
+    finally:
+        release.set()
         cleanup(window, wait_until)
 
 
@@ -118,6 +213,7 @@ def test_speech_failure_keeps_text_tip_without_opening_chat(qapp, wait_until, mo
 def test_tip_is_held_while_user_speaks(qapp, wait_until, monkeypatch):
     window = setup_window(qapp)
     try:
+        window.context.interaction.begin_user_turn()
         window.set_status("Speech detected")
         window.handle_advice_candidate(candidate())
         assert window.advice_worker is None

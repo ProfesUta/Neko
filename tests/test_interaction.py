@@ -72,6 +72,23 @@ def test_old_tip_cannot_return_after_user_turn_and_quiet_period(monkeypatch):
     assert state.allows_advice(captured_at=112)
 
 
+def test_microphone_off_does_not_impose_a_conversation_cooldown_on_fresh_notices(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(interaction.time, "monotonic", lambda: now[0])
+    state = InteractionState()
+    state.set_microphone_enabled(True)
+    state.begin_user_turn()
+    now[0] = 101
+    state.finish_user_turn()
+    now[0] = 101.1
+    assert not state.allows_advice(captured_at=101.1)
+    state.set_microphone_enabled(False)
+    assert state.allows_advice(captured_at=101.1)
+    assert not state.allows_advice(captured_at=100)  # Old evidence stays invalid.
+    state.begin_user_turn()
+    assert not state.allows_advice(captured_at=101.1)  # Active replies retain priority.
+
+
 def test_advice_cannot_cancel_a_normal_reply(monkeypatch):
     context = Context()
     worker = VoiceWorker([], context)

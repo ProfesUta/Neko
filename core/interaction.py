@@ -46,6 +46,7 @@ class InteractionState:
     def __init__(self):
         self._lock = RLock()
         self._user_active = False
+        self._microphone_enabled = False
         self._last_user_activity = float("-inf")
         self._last_playback_end = float("-inf")
         self._spoken = deque(maxlen=8)
@@ -62,11 +63,16 @@ class InteractionState:
                 self._last_user_activity = time.monotonic()
             self._user_active = False
 
+    def set_microphone_enabled(self, enabled):
+        with self._lock:
+            self._microphone_enabled = bool(enabled)
+
     def allows_advice(self, captured_at):
         with self._lock:
             return (
                 not self._user_active
-                and time.monotonic() - self._last_user_activity >= VOICE_CONVERSATION_GRACE_SECONDS
+                and (not self._microphone_enabled
+                     or time.monotonic() - self._last_user_activity >= VOICE_CONVERSATION_GRACE_SECONDS)
                 and captured_at >= self._last_user_activity
             )
 

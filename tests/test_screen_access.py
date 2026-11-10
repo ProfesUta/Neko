@@ -88,7 +88,7 @@ def test_screen_prompt_explains_actual_capability_and_snapshot_age():
     context = Context()
     context.set_screen_reader(object())
     context.set_screen_observation("League match: red health bar", time.monotonic() - 4)
-    prompt = conversation_messages([{"role": "user", "content": "Can you watch?"}], context)[0]["content"]
+    prompt = conversation_messages([{"role": "user", "content": "Can you watch my screen?"}], context)[0]["content"]
     assert '"enabled": true' in prompt and '"age_seconds": 4.0' in prompt
     assert "red health bar" in prompt and "Never say you are text-only" in prompt
     context.set_screen_error("Capture failed")

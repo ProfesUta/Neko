@@ -68,6 +68,49 @@ class VoiceWarmupWorker(QThread):
             self.warning.emit(f"Voice preload unavailable: {error}")
 
 
+class LeagueWorker(QThread):
+    """One owned asyncio loop for all League I/O. Stop cancels open requests."""
+    notification = Signal(object)
+    warning = Signal(str)
+
+    def __init__(self, league):
+        super().__init__()
+        self.league = league
+        self._stop_event = Event()
+        self._loop = self._task = None
+
+    def stop(self):
+        self._stop_event.set()
+        self.requestInterruption()
+        try:
+            if self._loop and self._task:
+                self._loop.call_soon_threadsafe(self._task.cancel)
+        except RuntimeError:
+            pass  # The event loop already finished.
+
+    def run(self):
+        import asyncio
+        async def serve():
+            self._loop = asyncio.get_running_loop()
+            self._task = asyncio.current_task()
+            if not self._stop_event.is_set():
+                await self.league.run()
+        self.league.on_notification = self.notification.emit
+        try:
+            asyncio.run(serve())
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # Do not stringify network errors, which can contain auth headers.
+            logging.warning("League awareness stopped; check League configuration and restart Capri.")
+            self.warning.emit("League awareness unavailable. Check League configuration.")
+        finally:
+            self.league.on_notification = None
+            self._task = self._loop = None
+            if self.league.metrics.enabled:
+                logging.info("League latency summary (milliseconds): %s", json.dumps(self.league.metrics.report()))
+
+
 class ConversationWorker(QThread):
     status_changed = Signal(str)
     user_text = Signal(str)
@@ -104,7 +147,8 @@ class ConversationWorker(QThread):
         from core.spatial import spatial_request
         from core.quick_actions import parse_location_request, location_reply
         from core.conversation import needs_fresh_screen, needs_tools, converse
-        from core.league import league_question, direct_league_answer
+        from core.league import league_question
+        from core.response_grounding import ambiguous_question, is_proactive, information_request
         from core.screen_access import screen_capability_question, screen_status_reply
 
         started = time.monotonic()
@@ -118,6 +162,18 @@ class ConversationWorker(QThread):
         self.messages.append({"role": "user", "content": text})
         self.user_text.emit(text)
         check_cancelled(self._stop_event)
+        recent_users = [item for item in self.messages[:-1] if item.get("role") == "user" and not is_proactive(item)][-4:]
+        league_request = league_question(text, recent_users, self.context.league.champ_select.names.names.values())
+        if league_request and information_request(text) and not needs_tools(text):
+            direct_answer = self._league_reply(text)
+            _trim_history(self.messages)
+            self.messages.append({"role": "assistant", "content": direct_answer})
+            return direct_answer
+        clarification = ambiguous_question(text, self.messages)
+        if clarification:
+            _trim_history(self.messages)
+            self.messages.append({"role": "assistant", "content": clarification})
+            return clarification
         if self.context.spatial is not None:
             self._spatial_generation = self.context.spatial.begin_turn(text, self._stop_event)
             quick = parse_location_request(text) if config.SPATIAL_QUICK_ACTIONS_ENABLED else None
@@ -145,15 +201,6 @@ class ConversationWorker(QThread):
             _trim_history(self.messages)
             self.messages.append({"role": "assistant", "content": answer})
             return answer
-        recent = [*self.messages[-6:], {"content": self.context.get_screen_observation()}]
-        if screen_enabled and config.LEAGUE_LIVE_DATA_ENABLED and league_question(text, recent):
-            game = self.context.league.read(self._stop_event)
-            direct_answer = direct_league_answer(text, game)
-            if direct_answer:
-                _trim_history(self.messages)
-                self.messages.append({"role": "assistant", "content": direct_answer})
-                logging.info("Direct League answer: %.0f ms", (time.monotonic() - started) * 1000)
-                return direct_answer
         if screen_enabled and (capability or needs_fresh_screen(text) or not config.CONVERSATION_STREAMING_ENABLED) and not (
             self.context.spatial is not None and spatial_request(text)
             and not re.search(r"\bwhere.{0,25}(enemy|jungler)\b", text, re.I)
@@ -210,8 +257,38 @@ class ConversationWorker(QThread):
             tool_callback=self.tool_result.emit,
         )
 
+    def _league_reply(self, text):
+        """API cache -> current screen -> grounded reply, with no chat-model detour."""
+        from core.response_grounding import UNVERIFIED
+        from core.screen_access import screen_status_reply
+        metrics = self.context.league.metrics
+        started = metrics.start()
+        try:
+            self.status_changed.emit("Checking League API")
+            answer = self.context.league.answer(text, verified_only=True)
+            evidence = self.context.league.context_for(text) or {"own_player": None}
+            evidence = {**evidence, "api_checked": True}
+            check_cancelled(self._stop_event)
+            self.status_changed.emit("Checking screen")
+            if answer:
+                checked = self.context.check_screen(self._stop_event)
+                check_cancelled(self._stop_event)
+                if checked["status"] != "checked":
+                    return "The League API says: " + answer + " I couldn't also check the screen right now."
+                return answer
+            status = self.context.get_screen_status()
+            if not status["enabled"]:
+                return "I checked the League API, but it doesn't verify that answer. Turn VISION ON so I can check the screen too."
+            answer = self.context.refresh_screen(text, self._stop_event, conversation=self.messages, league_context=evidence)
+            check_cancelled(self._stop_event)
+            if self.context.get_screen_status()["error"]:
+                return "I checked the League API. " + screen_status_reply(self.context)
+            return answer or UNVERIFIED
+        finally:
+            metrics.finish("league_api_screen_reply", started)
+
     def _prepare_spatial_response(self, answer):
-        if self.context.spatial is not None:
+        if self.context.spatial is not None and self._spatial_generation is not None:
             # A direct result was just acknowledged by the GUI with no intervening
             # inference. Speech still revalidates after synthesis, before playback.
             replacement = None if self._spatial_response_prepared else self.context.spatial.prepare_response(self._stop_event)
@@ -222,9 +299,11 @@ class ConversationWorker(QThread):
         return answer
 
     def _finish_spatial(self):
+        generation, self._spatial_generation = self._spatial_generation, None
         self._turn_started = None
-        if self.context.spatial is not None and self._spatial_generation is not None:
-            self.context.spatial.finish_turn(self._spatial_generation)
+        self._question = ""
+        if self.context.spatial is not None and generation is not None:
+            self.context.spatial.finish_turn(generation)
 
     def _stream_sentence(self, sentence, cancellation):
         if self.context.spatial is not None:
@@ -236,7 +315,8 @@ class ConversationWorker(QThread):
             sentence = self.context.spatial.guard_response(sentence)
         return self._speak(sentence, cancel_event=cancellation, prepare_only=True)
 
-    def _speak(self, answer, cancel_event=None, start_deadline=None, urgent=False, prepare_only=False):
+    def _speak(self, answer, cancel_event=None, start_deadline=None, urgent=False, prepare_only=False,
+               playback_guard=None, on_started=None):
         from voice.tts import prepare_speech, speak
 
         check_cancelled(self._stop_event)
@@ -246,6 +326,11 @@ class ConversationWorker(QThread):
         delivery = reply_delivery(self._question, answer, urgent=urgent)
         options = {"start_deadline": start_deadline} if start_deadline is not None else {}
         options["style"] = delivery.style
+        if playback_guard is not None:
+            def guard():
+                if not playback_guard():
+                    raise OperationCancelled()
+            options["before_playback"] = guard
         if self.context.spatial is not None and self._spatial_generation is not None:
             def confirm_pointing():
                 nonlocal spoken_answer, delivery
@@ -262,6 +347,8 @@ class ConversationWorker(QThread):
         def started():
             nonlocal playback_started
             playback_started = True
+            if on_started:
+                on_started()
             self.status_changed.emit("Speaking")
             if self._turn_started is not None and not self._first_audio_logged:
                 logging.info("First speech audio: %.0f ms after transcript", (time.monotonic() - self._turn_started) * 1000)
@@ -283,21 +370,25 @@ class ConversationWorker(QThread):
             finished()
 
     def _play_advice(self, advice, cancel_event):
+        from core.league_voice import LeagueAnnouncement
+        league_event = isinstance(advice, LeagueAnnouncement)
+        def current():
+            return (advice.is_fresh() and self.context.interaction.allows_advice(advice.captured_at)
+                    and not self.context.interaction.repeats_recent_response(advice.text)
+                    and (self.context.league.announcement_current(advice) and config.LEAGUE_PROACTIVE_VOICE_ENABLED
+                         if league_event else self.context.is_screen_source_current(advice.source)))
         try:
-            if (
-                not advice.is_fresh() or not self.context.is_screen_source_current(advice.source)
-                or not self.context.interaction.allows_advice(advice.captured_at)
-                or self.context.interaction.repeats_recent_response(advice.text)
-            ):
+            if not current():
                 return
             cancellation = AnyEvent(self._stop_event, cancel_event)
             check_cancelled(cancellation)
             self.advice_ready.emit(advice)
-            self._speak(
-                advice.text, cancel_event=cancellation,
-                start_deadline=advice.captured_at + ADVICE_MAX_AGE_SECONDS,
-                urgent=True,
-            )
+            options = {"playback_guard": current}
+            if league_event:
+                options["on_started"] = lambda: self.context.league.metrics.finish("notification_to_audio", advice.queued_ns)
+            self._speak(advice.text, cancel_event=cancellation,
+                        start_deadline=advice.captured_at + (advice.lifetime if league_event else ADVICE_MAX_AGE_SECONDS),
+                        urgent=not league_event, **options)
         except OperationCancelled:
             check_cancelled(self._stop_event)
         except Exception as error:
@@ -366,6 +457,15 @@ class VoiceWorker(ConversationWorker):
         self._pending_advice = None
         self._active_advice_cancel = None
         self._speech_started_at = None
+        self._microphone_muted = Event()
+        self.context.interaction.set_microphone_enabled(True)
+
+    def microphone_enabled(self):
+        return not self._microphone_muted.is_set() and not self._stop_event.is_set()
+
+    def mute_microphone(self):
+        self._microphone_muted.set()
+        self.context.interaction.set_microphone_enabled(False)
 
     def offer_advice(self, advice):
         if (
@@ -374,7 +474,7 @@ class VoiceWorker(ConversationWorker):
         ):
             return False
         with self._advice_lock:
-            if self._pending_advice is not None or self._stop_event.is_set():
+            if self._pending_advice is not None or not self.microphone_enabled():
                 return False
             self._pending_advice = (advice, Event())
             self._advice_available.set()
@@ -406,6 +506,8 @@ class VoiceWorker(ConversationWorker):
                     self._active_advice_cancel = None
 
     def _on_speech_start(self):
+        if not self.microphone_enabled():
+            return
         # Set priority synchronously, before the GUI receives the status signal.
         self._speech_started_at = time.monotonic()
         self.context.interaction.begin_user_turn()
@@ -433,19 +535,22 @@ class VoiceWorker(ConversationWorker):
                     logging.warning("Speech output warm-up unavailable: %s", error)
             self.inference_active.emit(False)
 
-            while not self._stop_event.is_set():
+            recording_cancellation = AnyEvent(self._stop_event, self._microphone_muted)
+            while self.microphone_enabled():
                 self._deliver_pending_advice()
                 check_cancelled(self._stop_event)
-                if self._stop_event.wait(self.context.interaction.microphone_delay()):
+                if recording_cancellation.wait(self.context.interaction.microphone_delay()):
                     break
                 self.status_changed.emit("Listening")
                 self._speech_started_at = None
                 audio = record_until_silence(
-                    self._stop_event,
+                    recording_cancellation,
                     on_speech_start=self._on_speech_start,
                     idle_interrupt_event=self._advice_available,
                 )
                 check_cancelled(self._stop_event)
+                if self._microphone_muted.is_set():
+                    break
                 if audio is None:
                     self.context.interaction.finish_user_turn()
                     self.inference_active.emit(False)
@@ -483,10 +588,12 @@ class VoiceWorker(ConversationWorker):
                     self._finish_spatial()
                     self.context.interaction.finish_user_turn()
         except OperationCancelled:
-            self.interrupted.emit()
+            if self._stop_event.is_set():
+                self.interrupted.emit()
         except Exception as error:
             self._report_error(error)
         finally:
             self.cancel_advice()
+            self.context.interaction.set_microphone_enabled(False)
             self.context.interaction.finish_user_turn()
             self.inference_active.emit(False)

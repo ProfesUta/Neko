@@ -8,9 +8,21 @@ CONVERSATION_STREAMING_ENABLED = True
 CONVERSATION_MAX_TOKENS = 256
 CONVERSATION_HISTORY_TURNS = 6
 MODEL_KEEP_ALIVE = "15m"
-LEAGUE_LIVE_DATA_ENABLED = True
+LEAGUE_LIVE_DATA_ENABLED = os.getenv("CAPRI_LEAGUE", "1") != "0"
 LEAGUE_REQUEST_TIMEOUT_SECONDS = 0.4
 LEAGUE_CACHE_SECONDS = 1.0
+# Read-only League telemetry runs independently of screen capture and Ollama.
+LEAGUE_CHAMP_SELECT_ENABLED = LEAGUE_LIVE_DATA_ENABLED
+LEAGUE_EVENTS_ENABLED = LEAGUE_LIVE_DATA_ENABLED
+LEAGUE_EVENT_POLL_INTERVAL = 0.25  # Seconds; stats keep their slower 1s cadence.
+LEAGUE_CHAMP_SELECT_FALLBACK_INTERVAL = 5.0
+LEAGUE_PROACTIVE_VOICE_ENABLED = True  # Speaks with MIC OFF; ADVICE ON/OFF controls notices.
+LEAGUE_EVENT_HISTORY_LIMIT = 64
+LEAGUE_LATENCY_METRICS_ENABLED = False  # Bounded samples; no per-event logging.
+LEAGUE_LOCKFILE_PATHS = tuple(filter(None, os.getenv("CAPRI_LEAGUE_LOCKFILES", "").split(os.pathsep)))
+# Optional Riot root PEM. Otherwise TLS verification is disabled ONLY for the
+# fixed 127.0.0.1 APIs (no redirects, proxies, external credentials, or input).
+LEAGUE_ROOT_CERT = os.getenv("CAPRI_LEAGUE_ROOT_CERT", "")
 # Screen captures stay on the local Ollama server.
 OLLAMA_HOST = "http://127.0.0.1:11434"
 MODEL_TIMEOUT_SECONDS = 120
@@ -76,6 +88,7 @@ SPATIAL_QUICK_ACTIONS_ENABLED = True
 POINTING_LEFT_HAND_ANCHOR = (0.17, 0.25)
 WHISPER_MODEL = os.getenv("CAPRI_WHISPER_MODEL", "base")
 VOICE_PRELOAD_ON_STARTUP = os.getenv("CAPRI_PRELOAD_VOICE", "1") != "0"
+SPEAK_TYPED_REPLIES_BY_DEFAULT = os.getenv("CAPRI_SPEECH", "1") != "0"  # Independent of MIC ON/OFF.
 WHISPER_LANGUAGE = os.getenv("CAPRI_WHISPER_LANGUAGE", "en")
 WHISPER_BEAM_SIZE = 1  # Greedy decoding for low-latency commands; set 5 for wider search.
 VOICE_SILENCE_MS = 500
@@ -118,6 +131,9 @@ IMPORTANT:
 - Never claim an action happened unless a tool actually performed it.
 - Never invent tool results.
 - If you don't know something, say so.
+- If the question or reference is unclear, say what is unclear and ask one short clarification question. Never answer an imagined question.
+- Answer only the current request. Do not add random reactions, unrelated tips, or facts from old screen observations.
+- For current League questions, use the supplied API facts and checked screen evidence. If either source cannot verify a claim, say so; never fill the gap with a guess.
 - Personality must never override accuracy or usefulness.
 
 TOOLS:

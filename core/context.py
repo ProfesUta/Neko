@@ -78,7 +78,25 @@ class Context:
             self._screen_observation_at = 0.0
             self._screen_errors.clear()
 
-    def refresh_screen(self, question, cancel_event=None, conversation=None):
+    def check_screen(self, cancel_event=None):
+        """Cheap current-frame check for API-covered questions; no vision model."""
+        from core.cancellation import check_cancelled
+        check_cancelled(cancel_event)
+        with self._screen_observation_lock:
+            reader = self._screen_reader
+        if reader is None:
+            return {"status": "disabled"}
+        if not hasattr(reader, "check_screen"):
+            return {"status": "unavailable"}
+        try:
+            result = reader.check_screen(cancel_event)
+        except Exception as error:
+            check_cancelled(cancel_event)
+            return {"status": "unavailable", "error": str(error)}
+        with self._screen_observation_lock:
+            return result if reader is self._screen_reader else {"status": "disabled"}
+
+    def refresh_screen(self, question, cancel_event=None, conversation=None, league_context=None):
         """Called on the conversation worker, never on the GUI thread."""
         with self._screen_observation_lock:
             reader = self._screen_reader
@@ -87,7 +105,8 @@ class Context:
         try:
             if hasattr(reader, "set_conversation"):
                 reader.set_conversation(conversation or [])
-            reading = reader.describe_question(question, cancel_event)
+            options = {"league_context": league_context} if league_context is not None else {}
+            reading = reader.describe_question(question, cancel_event, **options)
             text, captured_at = reading
         except Exception as error:
             from core.cancellation import check_cancelled
@@ -102,8 +121,21 @@ class Context:
             if reader is self._screen_reader and not reader.isInterruptionRequested():
                 self._screen_observation = text
                 self._screen_observation_at = captured_at
-                self._screen_errors.pop("analysis", None)
+                if hasattr(reader, "failure_state"):
+                    # Use current worker state, not older queued GUI signals.
+                    # Capture and inference can recover independently.
+                    failures = reader.failure_state()
+                    for stage in ("capture", "analysis"):
+                        if stage in failures:
+                            self._screen_errors[stage] = failures[stage]
+                        else:
+                            self._screen_errors.pop(stage, None)
+                else:
+                    self._screen_errors.pop("analysis", None)
                 if time.monotonic() - captured_at <= VISION_CONTEXT_MAX_AGE_SECONDS:
+                    if league_context is not None and not getattr(reading, "grounded", False):
+                        from core.response_grounding import UNVERIFIED
+                        return UNVERIFIED
                     return getattr(reading, "direct_answer", None)
 
     def pause_background_screen(self):

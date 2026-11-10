@@ -12,6 +12,7 @@ from threading import Event
 from config import TTS_TIMEOUT_SECONDS
 import config
 from core.cancellation import AnyEvent, DeadlineEvent, check_cancelled
+from voice.pronunciation import prepare_kokoro_text
 
 
 def kokoro_settings(style=None):
@@ -63,7 +64,7 @@ def _synthesize(text, output_path, cancel_event, style=None):
     from voice.kokoro_session import session
     try:
         session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
-                        text=text, output=output_path, **kokoro_settings(style))
+                        text=prepare_kokoro_text(text), output=output_path, **kokoro_settings(style))
     finally:
         if not config.TTS_PERSISTENT_ENABLED:
             session.shutdown()

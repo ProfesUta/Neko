@@ -7,6 +7,8 @@ Thumbs.db
 
 data/memory.db
 data/vision.log*
+data/league-champions.json
+data/league-champions.tmp
 test_voice.wav
 
 .env

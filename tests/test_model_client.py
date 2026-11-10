@@ -70,3 +70,54 @@ def test_missing_model_gives_pull_command(monkeypatch):
     transport_client(monkeypatch, lambda request: httpx.Response(404, json={"error": "model missing"}))
     with pytest.raises(RuntimeError, match="ollama pull test-model"):
         model_client.request_chat(model="test-model", messages=[])
+
+
+def test_temporary_connection_failure_recovers_before_reporting_error(monkeypatch):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        if len(requests) < 3:
+            raise httpx.ConnectError("Server restarting", request=request)
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "Recovered."}, "done": True})
+    transport_client(monkeypatch, handler)
+    assert model_client.request_chat(model="test", messages=[]).message.content == "Recovered."
+    assert len(requests) == 3
+
+
+def test_connection_failure_is_bounded_and_explains_how_to_recover(monkeypatch):
+    requests = []
+    def handler(request):
+        requests.append(request)
+        raise httpx.ConnectError("Unavailable", request=request)
+    transport_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="Open Ollama"):
+        model_client.request_chat(model="test", messages=[])
+    assert len(requests) == 3
+
+
+def test_stop_cancels_connection_retry_backoff_promptly(monkeypatch):
+    stop, failed = Event(), Event()
+    def handler(request):
+        failed.set()
+        stop.set()
+        raise httpx.ConnectError("Unavailable", request=request)
+    transport_client(monkeypatch, handler)
+    started = time.monotonic()
+    with pytest.raises(OperationCancelled):
+        model_client.request_chat(cancel_event=stop, model="test", messages=[])
+    assert failed.is_set() and time.monotonic() - started < .5
+
+
+def test_stream_connection_failure_never_replays_text_already_delivered(monkeypatch):
+    requests, received = [], []
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{"message":{"role":"assistant","content":"Already spoken."},"done":false}\n'
+            raise ConnectionError("Connection lost after partial reply")
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, stream=Body())
+    transport_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="Ollama"):
+        model_client.request_chat(model="test", messages=[], on_text=received.append)
+    assert received == ["Already spoken."] and len(requests) == 1

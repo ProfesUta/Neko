@@ -29,6 +29,7 @@ class ScreenReading:
     text: str
     captured_at: float
     direct_answer: str | None = None
+    grounded: bool = False
 
     def __iter__(self):
         yield self.text
@@ -54,6 +55,8 @@ def direct_screen_answer(content, question):
     answer = data.get("question_answer")
     if (
         data.get("answer_directly") is True and data.get("requires_tools") is False
+        and not str(data.get("uncertainty", "")).strip()
+        and data.get("sensitive") is not True
         and isinstance(answer, str) and 0 < len(answer.strip()) <= 2000
     ):
         return answer.strip()
@@ -86,11 +89,11 @@ class AdvicePolicy:
         similar_tip = SequenceMatcher(None, old_text, new_text).ratio() > 0.75
         return same_key or same_evidence or similar_tip
 
-    def should_offer(self, advice):
+    def should_offer(self, advice, *, ignore_delivery_gap=False):
         now = time.monotonic()
         if not advice.is_fresh() or now < self._snoozed_until:
             return False
-        if now - self._last_delivered < ADVICE_MIN_GAP_SECONDS:
+        if not ignore_delivery_gap and now - self._last_delivered < ADVICE_MIN_GAP_SECONDS:
             return False
         self._recent = [item for item in self._recent if now - item[0] < ADVICE_REPEAT_SECONDS]
         self._attempts = [item for item in self._attempts if now - item[0] < ADVICE_ATTEMPT_COOLDOWN_SECONDS]
@@ -170,11 +173,14 @@ def parse_assessment(
             parts.append(f"{label}: {data[key][:1400]}")
     advice = None
     candidate = data.get("urgent_advice")
+    from core.response_grounding import has_observed_evidence
     if (
         allow_advice and data.get("sensitive") is False and isinstance(candidate, dict)
+        and not str(data.get("uncertainty", "")).strip()
         and candidate.get("needed_now") is True and candidate.get("confidence") == "high"
         and all(isinstance(candidate.get(key), str) and candidate[key].strip()
                 for key in ("text", "evidence", "event_key"))
+        and has_observed_evidence(candidate.get("evidence"), data)
     ):
         advice = ScreenAdvice(
             candidate["text"].strip()[:280], candidate["event_key"].strip()[:100],

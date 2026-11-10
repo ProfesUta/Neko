@@ -48,8 +48,8 @@ class ControlsPopup(QFrame):
         row.addWidget(self.stop_button)
         controls_layout.addLayout(row)
         self.advice_button = self._button("ADVICE ON", "adviceButton", "advice", checkable=True)
-        self.advice_button.setAccessibleName("Toggle urgent screen advice")
-        self.advice_button.setToolTip("Speak up only when visible information needs your attention now.")
+        self.advice_button.setAccessibleName("Toggle proactive screen and game notices")
+        self.advice_button.setToolTip("Capri speaks important screen and game notices, even with MIC OFF. Click to silence notices.")
         controls_layout.addWidget(self.advice_button)
         layout.addWidget(self.controls)
 

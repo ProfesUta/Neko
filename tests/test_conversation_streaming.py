@@ -36,8 +36,8 @@ def test_installed_model_selection_avoids_large_vision_embedding_and_tiny_models
     assert conversation.select_installed_model(installed, "fallback") == "qwen3:8b"
 
 
-@pytest.mark.parametrize("question", ["How are you?", "Explain gravity", "How do I improve at League of Legends?",
-                                      "I'm playing Jinx, how should I manage the wave?"])
+@pytest.mark.parametrize("question", ["How are you?", "Explain gravity", "How do I improve at chess?",
+                                      "How should I organize my desk?"])
 def test_general_conversation_skips_screenshot_and_tool_engine(question, monkeypatch):
     context = Context()
     class Reader:
@@ -81,7 +81,7 @@ def test_first_sentence_is_spoken_before_model_finishes_and_not_spoken_twice(mon
         kwargs["on_text"]("Last-hit while you watch the map.")
         return ollama.ChatResponse(message={"role": "assistant", "content": "Keep the wave near your tower. Last-hit while you watch the map."})
     monkeypatch.setattr(conversation, "request_chat", generate)
-    worker = ChatWorker([], context, "How can I manage a wave in League?", speak_reply=True)
+    worker = ChatWorker([], context, "How can I organize my desk?", speak_reply=True)
     worker.error.connect(errors.append)
     worker.run()
     assert not errors

@@ -190,6 +190,7 @@ window.close()
 """
     result = subprocess.run(
         [sys.executable, "-c", source], capture_output=True, text=True,
-        timeout=10, env={**os.environ, "CAPRI_DATA_DIR": str(tmp_path), "CAPRI_VISION": "0"},
+        timeout=10, env={**os.environ, "CAPRI_DATA_DIR": str(tmp_path), "CAPRI_VISION": "0",
+                         "CAPRI_LEAGUE": "0", "CAPRI_SPEECH": "0"},
     )
     assert result.returncode == 0, result.stderr

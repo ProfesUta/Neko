@@ -14,9 +14,17 @@ def build_messages():
     return [{"role": "system", "content": SYSTEM_PROMPT}], Context()
 
 
-def main():
+def configure_logging():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    # Local telemetry performs several requests per second. Keep real problems
+    # visible without printing every successful poll (or slowing its hot path).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     configure_vision_logging(DATA_DIR)
+
+
+def main():
+    configure_logging()
     app = QApplication(sys.argv)
     app.setStyleSheet(DARK_THEME)
     messages, context = build_messages()

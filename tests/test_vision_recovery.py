@@ -30,7 +30,7 @@ def test_live_recovery_clears_capture_error_even_when_analysis_is_paused(qapp, w
         yield lambda: frame(2)
     stream = LiveScreenStream(capture_factory, FrameHistory(), fps=30, retry_seconds=0.05,
                               on_error=lambda message: reader.report_failure(message, "capture"),
-                              on_recovered=lambda: reader.recovered.emit("capture"))
+                              on_recovered=lambda: reader.report_recovery("capture"))
     reader._live_stream = stream
     window.handle_inference_active(True)
     stream.start()
@@ -58,7 +58,7 @@ def test_capture_recovery_keeps_independent_analysis_error(qapp):
     try:
         reader.report_failure("Screen capture failed", "capture")
         reader.report_failure("Vision model is missing", "analysis")
-        reader.recovered.emit("capture")
+        reader.report_recovery("capture")
         status = window.context.get_screen_status()
         assert status["errors"] == {"analysis": "Vision model is missing"}
         assert "Vision model is missing" in screen_status_reply(window.context)
@@ -107,7 +107,7 @@ def test_model_success_does_not_clear_a_capture_failure(qapp):
     try:
         reader.report_failure("Desktop capture is unavailable", "capture")
         reader.report_failure("Analysis failed earlier", "analysis")
-        reader.recovered.emit("analysis")
+        reader.report_recovery("analysis")
         window.handle_observation("An earlier image interpretation", time.monotonic())
         window.handle_vision_status("Vision: screen understood")
         assert window.context.get_screen_status()["errors"] == {"capture": "Desktop capture is unavailable"}
@@ -158,3 +158,91 @@ def test_vision_diagnostic_log_records_errors_without_response_or_image_data(tmp
                 logger.removeHandler(handler)
                 handler.close()
         logger.setLevel(previous_level)
+
+
+def test_successful_question_capture_clears_old_capture_error(qapp, monkeypatch):
+    import mss
+    window = make_window(qapp)
+    reader = VisionWorker(1, "test", (100, 100), 0)
+    connect(window, reader)
+    @contextmanager
+    def capture():
+        yield object()
+    monkeypatch.setattr(mss, "mss", capture)
+    monkeypatch.setattr(reader, "_take_frame", lambda *args: frame(1))
+    monkeypatch.setattr(reader, "_analyze", lambda *args, **kwargs: ("A browser is visible", None, "Your browser is open."))
+    try:
+        reader.report_failure("Old display mode switch", "capture")
+        assert window.context.get_screen_status()["error"]
+        assert window.context.refresh_screen("What do you see?") == "Your browser is open."
+        assert not window.context.get_screen_status()["error"] and window._vision_error is None
+    finally:
+        window.vision_worker = None
+        window.close()
+
+
+def test_queued_failures_and_recoveries_cannot_overwrite_newer_state(qapp):
+    from threading import Thread
+    window = make_window(qapp)
+    reader = VisionWorker(1, "test", (100, 100), 0)
+    connect(window, reader)
+    def updates():
+        reader.report_failure("Old error", "analysis")
+        reader.report_recovery("analysis")
+        reader.report_failure("Current error", "analysis")
+    thread = Thread(target=updates)
+    try:
+        thread.start()
+        thread.join(1)
+        assert not thread.is_alive()
+        qapp.processEvents()
+        assert window.context.get_screen_status()["errors"] == {"analysis": "Current error"}
+        transcript = window.chat_panel.transcript.toPlainText()
+        assert "Old error" not in transcript and "Current error" in transcript
+    finally:
+        window.vision_worker = None
+        window.close()
+
+
+def test_late_signals_from_replaced_reader_are_ignored(qapp):
+    window = make_window(qapp)
+    old, current = [VisionWorker(1, "test", (100, 100), 0) for _ in range(2)]
+    connect(window, old)
+    connect(window, current)
+    try:
+        current.report_failure("Current model error", "analysis")
+        old.report_failure("Old reader failed", "capture")
+        old.report_recovery("analysis")
+        assert window.context.get_screen_status()["errors"] == {"analysis": "Current model error"}
+        assert "Old reader failed" not in window.chat_panel.transcript.toPlainText()
+    finally:
+        window.vision_worker = None
+        window.close()
+
+
+def test_analysis_recovery_does_not_require_publishing_an_obsolete_frame(monkeypatch):
+    import mss
+    reader = VisionWorker(1, "test", (100, 100), 0)
+    reader.interval_seconds = 0
+    attempts, failures, observations = [], [], []
+    @contextmanager
+    def capture():
+        yield object()
+    def analyze(*args):
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise RuntimeError("Temporary model error")
+        return "A previous app", None, None
+    def recovered(stage):
+        if stage == "analysis":
+            reader.stop()
+    monkeypatch.setattr(mss, "mss", capture)
+    monkeypatch.setattr(reader, "_take_frame", lambda *args: frame(1))
+    monkeypatch.setattr(reader, "_analyze", analyze)
+    monkeypatch.setattr(reader, "_live_result_current", lambda *args: False)
+    reader.recovered.connect(recovered)
+    reader.failure.connect(lambda stage, message: failures.append(message))
+    reader.observation_ready.connect(lambda text, at: observations.append(text))
+    reader.run()
+    assert len(attempts) == 2 and failures == ["Temporary model error"]
+    assert reader.failure_state() == {} and observations == []

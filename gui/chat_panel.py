@@ -49,6 +49,9 @@ class ChatPanel(QDialog):
         layout.addLayout(row)
         options = QHBoxLayout()
         self.speak_replies = QCheckBox("Speak typed replies")
+        import config
+        self.speak_replies.setChecked(config.SPEAK_TYPED_REPLIES_BY_DEFAULT)
+        self.speak_replies.setToolTip("Capri can speak while your microphone is off. Uncheck for silent typed replies.")
         options.addWidget(self.speak_replies)
         options.addStretch()
         self.stop_button = QPushButton("Stop")

@@ -14,7 +14,7 @@ def assessment(**updates):
         "question_answer": "", "uncertainty": "", "sensitive": False,
         "urgent_advice": {
             "needed_now": True, "confidence": "high", "event_key": "low-health",
-            "evidence": "The visible health indicator reads 10.",
+            "evidence": "Health: 10",
             "text": "Health is low. Get to cover and heal if you can.",
         },
     }

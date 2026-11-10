@@ -17,3 +17,15 @@ Speech runs through the official
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) Python package (Apache-2.0).
 The pack's bundled native DLLs are not extracted or executed. Third-party model
 components retain their upstream licenses.
+
+## League of Legends
+
+Capri is not endorsed by Riot Games and does not reflect the views or opinions
+of Riot Games or anyone officially involved in producing or managing Riot Games
+properties. Riot Games and all associated properties are trademarks or registered
+trademarks of Riot Games, Inc.
+
+Champion names use cached [Riot Data Dragon](https://developer.riotgames.com/docs/lol#data-dragon)
+data. The read-only League integrations use the local Live Client Data API and
+the unsupported League Client API. See [Riot's League documentation and policies](https://developer.riotgames.com/docs/lol).
+No player input, process memory access, hidden identity lookup, or gameplay automation is used.
