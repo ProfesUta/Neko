@@ -17,6 +17,7 @@ from config import SYSTEM_PROMPT, VISION_DIRECT_ANSWERS, VISION_REFRESH_SECONDS
 from core.cancellation import AnyEvent, OperationCancelled, check_cancelled
 from core.desktop import DesktopTracker
 from core.vision_model import request_vision as request_chat
+from core.inference_priority import priority as inference_priority
 from core.live_screen import CaptureLayoutChanged, FrameHistory, LiveScreenStream
 from core.vision_diagnostics import VisionReadError, logger as vision_logger
 from core.proactivity import ASSESSMENT_SCHEMA, ScreenReading, direct_screen_answer, parse_assessment
@@ -412,6 +413,7 @@ class VisionWorker(QThread):
             check_cancelled(cancellation)
             response = request_chat(
                 cancel_event=cancellation, model=self.model,
+                background=not bool(question),
                 keep_alive=config.MODEL_KEEP_ALIVE,
                 messages=[
                     {"role": "system", "content": instructions},
@@ -698,7 +700,8 @@ class VisionWorker(QThread):
         last_error = None
         cancellation = AnyEvent(self._stop_event, self._paused_event)
         while not self._stop_event.is_set():
-            if self.is_paused() or time.monotonic() < max(next_capture, self._resume_after):
+            if (self.is_paused() or not inference_priority.background_ready()
+                    or time.monotonic() < max(next_capture, self._resume_after)):
                 self._wake_event.wait(0.2)
                 if self._wake_event.is_set():
                     self._wake_event.clear()

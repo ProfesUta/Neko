@@ -68,9 +68,15 @@ def test_stop_halts_playback(monkeypatch, tmp_path):
         output.writeframes(np.zeros(100, dtype="<i2").tobytes())
     stop = Event()
     stopped = []
-    monkeypatch.setattr(sounddevice, "play", lambda *args, **kwargs: stop.set())
-    monkeypatch.setattr(sounddevice, "get_stream", lambda: type("Stream", (), {"active": True})())
-    monkeypatch.setattr(sounddevice, "stop", lambda: stopped.append(True))
+    class Output:
+        active = True
+        def start(self):
+            stop.set()
+        def abort(self):
+            stopped.append(True)
+        def close(self):
+            pass
+    monkeypatch.setattr(sounddevice, "OutputStream", lambda **kwargs: Output())
     with pytest.raises(OperationCancelled):
         tts._play_wav(path, stop)
     assert stopped == [True]

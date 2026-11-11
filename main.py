@@ -1,5 +1,6 @@
 import logging
 import sys
+import json
 
 from PySide6.QtWidgets import QApplication
 
@@ -30,7 +31,16 @@ def main():
     messages, context = build_messages()
     window = CapriWindow(messages, context)
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        from core.model_client import shutdown
+        from voice.kokoro_session import session
+        from core.latency import metrics
+        shutdown()
+        session.shutdown()
+        if metrics.enabled:
+            logging.info("Voice latency report (numeric only): %s", json.dumps(metrics.report()))
 
 
 if __name__ == "__main__":

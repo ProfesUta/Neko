@@ -4,13 +4,14 @@ import re
 from pathlib import Path
 
 from PySide6.QtCore import QFileSystemWatcher, QPoint, QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QPainter, QPen, QTransform
+from PySide6.QtGui import QBitmap, QColor, QImage, QPainter, QPen, QRegion, QTransform
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QWidget
 
 from gui.silhouette import SpriteSilhouette, silhouette_from_renderer
 from core.spatial_geometry import Rect, SpriteMetrics
 from config import POINTING_LEFT_HAND_ANCHOR
+import config
 
 
 SPRITE_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "sprites"
@@ -83,6 +84,15 @@ class CharacterSprite(QWidget):
         self._pointing = None
         self._pointing_scale = 1.0
         self._pointing_shapes = {}
+        self._league_mode = False
+        self._league_speaking = False
+        self._league_names = ()
+        self._league_signature = None
+        self._league_bounds = QRectF()
+        self._league_transforms = {}
+        self._league_shapes = {}
+        self._league_warning = False
+        self._league_available = (float("inf"), float("inf"))
         self._expression_timer = QTimer(self)
         self._expression_timer.setSingleShot(True)
         self._expression_timer.timeout.connect(self._restore_activity)
@@ -134,7 +144,62 @@ class CharacterSprite(QWidget):
         if self._pointing and "pointingleft" in self._renderers:
             self._frames = ("pointingleft",)
         self._timer.setInterval(ANIMATION_INTERVALS.get(state, 500))
+        if self._league_mode:
+            self._apply_league_frame()
         self.update()
+
+    @property
+    def league_mode(self):
+        return self._league_mode
+
+    def set_league_mode(self, active):
+        active = bool(active)
+        if self._league_mode == active:
+            return
+        self._league_mode = active
+        self._expression = None
+        self._expression_timer.stop()
+        self._pointing = None
+        if active:
+            self._apply_league_frame()
+            if self._league_names:
+                self._timer.stop()
+        else:
+            self._restore_activity()
+            self._timer.start(ANIMATION_INTERVALS.get(self._state, 500))
+        self.update()
+
+    def set_league_speaking(self, speaking):
+        speaking = bool(speaking)
+        if speaking != self._league_speaking:
+            self._league_speaking = speaking
+            if self._league_mode:
+                self._apply_league_frame()
+                self.update()
+
+    def _apply_league_frame(self):
+        if self._league_names:
+            self._frames = (self._league_names[int(self._league_speaking)],)
+            self._frame_index = 0
+
+    def league_visible_rect(self):
+        """Shared visible-artwork coordinates inside this widget (Qt logical)."""
+        if self._league_names:
+            return self._league_canvas()
+        return QRectF(self.rect())  # Safe fallback envelope for the normal sprites.
+
+    def set_league_available_size(self, width, height):
+        size = (max(1, width), max(1, height))
+        if size != self._league_available:
+            self._league_available = size
+            if self._league_mode:
+                self.update()
+
+    def _league_canvas(self):
+        scale = min(min(self.width(), self._league_available[0]) / self._league_bounds.width(),
+                    min(self.height(), self._league_available[1]) / self._league_bounds.height())
+        width, height = self._league_bounds.width() * scale, self._league_bounds.height() * scale
+        return QRectF(self.width() - width, (self.height() - height) / 2, width, height)
 
     @property
     def expression(self):
@@ -143,7 +208,7 @@ class CharacterSprite(QWidget):
     def flash_expression(self, name, duration_ms=1100):
         """A brief idle pose; voice/listening/processing expressions take priority."""
         name = _normalize_name(Path(name).stem)
-        if self._state != "idle" or self._pointing or name not in self._renderers:
+        if self._league_mode or self._state != "idle" or self._pointing or name not in self._renderers:
             return False
         self._expression = name
         self._frames = (name,)
@@ -155,7 +220,7 @@ class CharacterSprite(QWidget):
     def react(self, name, duration_ms=750):
         """Briefly react during speech without changing the activity or pointing pose."""
         name = _normalize_name(name)
-        if self._pointing or self._state not in ("idle", "speaking") or name not in self._renderers:
+        if self._league_mode or self._pointing or self._state not in ("idle", "speaking") or name not in self._renderers:
             return False
         self._expression = name
         self._frames = (name,)
@@ -173,12 +238,18 @@ class CharacterSprite(QWidget):
         self._frames = (("pointingleft",) if self._pointing else
                         self._find_frames(self._state, self._activity_name, self._activity_tokens))
         self._frame_index = 0
+        if self._league_mode:
+            self._apply_league_frame()
+            if self._league_names and hasattr(self, "_timer"):
+                self._timer.stop()
         self.update()
 
     def teleport_silhouette(self):
         """Only cached data is read on the teleport path."""
         if not self._frames:
             return None
+        if self._league_mode and self._league_names:
+            return self._league_shapes.get(self._frames[0])
         if self._pointing:
             return self._pointing_shape(self._pointing)
         return self._silhouettes.get(self._frames[self._frame_index])
@@ -213,7 +284,7 @@ class CharacterSprite(QWidget):
         return self._pointing_shapes[direction]
 
     def start_pointing(self, direction):
-        if direction not in ("left", "right") or "pointingleft" not in self._renderers:
+        if self._league_mode or direction not in ("left", "right") or "pointingleft" not in self._renderers:
             return False
         if not self._pointing:
             self._pointing_scale = self.render_target().width() / max(1, min(self.width(), self.height()))
@@ -256,6 +327,15 @@ class CharacterSprite(QWidget):
         return QPointF(window.mapToGlobal(QPoint(0, 0))) + QPointF(*hand)
 
     def draw_character(self, painter, target):
+        if self._league_mode and self._league_names:
+            name = self._frames[0]
+            painter.save()
+            painter.translate(target.x(), target.y())
+            painter.scale(target.width(), target.height())
+            painter.setTransform(self._league_transforms[name], True)
+            self._renderers[name].render(painter, self._renderers[name].viewBoxF())
+            painter.restore()
+            return
         if self._pointing:
             painter.save()
             painter.translate(target.x(), target.y())
@@ -268,6 +348,8 @@ class CharacterSprite(QWidget):
             self._renderers[self._frames[self._frame_index]].render(painter, target)
 
     def render_target(self):
+        if self._league_mode and self._league_names:
+            return self._league_canvas()
         side = min(self.width(), self.height())
         scale = 1 + 0.012 * math.sin(self._elapsed / 650) if self._state == "idle" else 1.0
         if self._pointing:
@@ -351,6 +433,7 @@ class CharacterSprite(QWidget):
         self._file_signatures = signatures
         self._silhouettes = silhouettes
         self._pointing_shapes.clear()
+        self._cache_league_layout()
         if "pointingleft" not in loaded:
             self._pointing = None
         if not self._renderers:
@@ -365,10 +448,70 @@ class CharacterSprite(QWidget):
         self._frame_index = 0
         if self._pointing:
             self._frames = ("pointingleft",)
+        if self._league_mode:
+            self._apply_league_frame()
         self.update()
 
+    def _cache_league_layout(self):
+        names = tuple(_normalize_name(Path(name).stem) for name in
+                      (config.LEAGUE_LOOKING_SPRITE, config.LEAGUE_TALKING_SPRITE))
+        signature = tuple((name, self._file_signatures.get(name)) for name in names)
+        if signature == self._league_signature:
+            return
+        self._league_signature = signature
+        self._league_names = ()
+        self._league_transforms.clear()
+        self._league_shapes.clear()
+        if any(name not in self._renderers for name in names):
+            if not self._league_warning:
+                logging.warning("League companion SVGs unavailable; keeping Capri's normal sprites (%s, %s)",
+                                config.LEAGUE_LOOKING_SPRITE, config.LEAGUE_TALKING_SPRITE)
+                self._league_warning = True
+            return
+        bounds = {}
+        for name in names:
+            renderer = self._renderers[name]
+            view = renderer.viewBoxF()
+            # Match actual SVG aspect ratio; only alpha measurement is rasterized,
+            # once on load. Painting always uses the cached vector renderer.
+            factor = 1024 / max(1, view.width(), view.height())
+            width, height = max(1, math.ceil(view.width() * factor)), max(1, math.ceil(view.height() * factor))
+            image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            renderer.render(painter, QRectF(0, 0, width, height))
+            painter.end()
+            alpha = QRegion(QBitmap.fromImage(image.createAlphaMask())).boundingRect()
+            if alpha.isEmpty():
+                logging.warning("League companion SVG has no visible artwork: %s", name)
+                return
+            # Normalize SVG units by viewBox height, rather than assuming both
+            # exports use identical origins, dimensions or pixel units.
+            bounds[name] = QRectF(alpha.x() * view.width() / width / view.height(),
+                                 alpha.y() / height,
+                                 alpha.width() * view.width() / width / view.height(), alpha.height() / height)
+        shared = bounds[names[0]].united(bounds[names[1]])
+        self._league_bounds = shared
+        for name in names:
+            body = bounds[name]
+            dx, dy = shared.right() - body.right(), shared.bottom() - body.bottom()
+            view = self._renderers[name].viewBoxF()
+            transform = QTransform(1 / view.height() / shared.width(), 0, 0, 1 / view.height() / shared.height(),
+                                   (dx - shared.x() - view.x() / view.height()) / shared.width(),
+                                   (dy - shared.y() - view.y() / view.height()) / shared.height())
+            self._league_transforms[name] = transform
+            shape = self._silhouettes[name]
+            native = QTransform(view.width(), 0, 0, view.height(), view.x(), view.y())
+            mapped = native * transform
+            self._league_shapes[name] = SpriteSilhouette(mapped.map(shape.path),
+                tuple((mapped.map(point), normal) for point, normal in shape.anchors))
+        self._league_names = names
+        self._league_warning = False
+
     def _find_frames(self, state, requested_name, requested_tokens):
-        names = tuple(sorted(self._renderers))
+        league_names = {_normalize_name(Path(name).stem) for name in
+                        (config.LEAGUE_LOOKING_SPRITE, config.LEAGUE_TALKING_SPRITE)}
+        names = tuple(name for name in sorted(self._renderers) if name not in league_names)
         if not names:
             return ()
 
@@ -400,6 +543,8 @@ class CharacterSprite(QWidget):
         return (fallback or names[0],)
 
     def _advance(self):
+        if self._league_mode and self._league_names:
+            return  # No breathing scale, expressions or animation frame changes.
         self._animation_ticks += 1
         if self._state == "idle":
             self._elapsed += ANIMATION_INTERVALS["idle"]
@@ -413,7 +558,7 @@ class CharacterSprite(QWidget):
         target = self.render_target()
         self.draw_character(painter, target)
 
-        if self._state == "processing" and not self._pointing:
+        if self._state == "processing" and not self._pointing and not self._league_mode:
             self._paint_data_glitch(painter, target)
         event.accept()
 

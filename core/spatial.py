@@ -465,6 +465,10 @@ class SpatialService:
                     self._invalidated = False
         return ticket.result
 
+    def response_requires_confirmation(self):
+        with self._lock:
+            return self._shown is not None or self._invalidated or self._requested_spatial
+
     def prepare_response(self, cancel_event=None):
         """Acknowledge a refreshed pose before text/TTS can claim 'right there'."""
         with self._lock:

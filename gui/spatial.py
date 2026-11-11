@@ -222,6 +222,9 @@ class MovementCoordinator(QObject):
 
     def _execute(self, ticket):
         try:
+            if getattr(self.owner, "league_mode_active", False) and ticket.kind in ("search", "show", "return"):
+                ticket.result = {"status": "unavailable", "message": "League Companion Mode keeps me docked; I can't move or use my pointing pose until it ends."}
+                return
             if (self._disposed or ticket.generation < self.generation
                     or (ticket.cancellation.is_set() and ticket.kind not in ("cancel", "finish"))):
                 ticket.result = {"status": "cancelled", "message": "A newer request cancelled this action"}

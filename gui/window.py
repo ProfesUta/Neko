@@ -68,6 +68,10 @@ class CapriWindow(QMainWindow):
         self._pending_advice = None
         self._deferred_screen_advice = None
         self._pending_action = None
+        self._league_mode_active = False
+        self._tts_active = False
+        self._league_window_bounds = None
+        self._league_monitor_id = None
 
         self.setWindowTitle("Capri")
         self.setWindowFlags(
@@ -140,8 +144,10 @@ class CapriWindow(QMainWindow):
         if config.VOICE_PRELOAD_ON_STARTUP:
             self.start_voice_preload()
         if config.LEAGUE_LIVE_DATA_ENABLED or config.LEAGUE_CHAMP_SELECT_ENABLED or config.LEAGUE_EVENTS_ENABLED:
-            self.league_worker = LeagueWorker(self.context.league)
+            self.league_worker = LeagueWorker(self.context.league, self.window_grounder)
             self.league_worker.notification.connect(self.handle_league_notification)
+            self.league_worker.session_active_changed.connect(self.set_league_companion_mode, Qt.ConnectionType.QueuedConnection)
+            self.league_worker.session_display_changed.connect(self._league_display_changed, Qt.ConnectionType.QueuedConnection)
             self.league_worker.warning.connect(lambda text: self.chat_panel.append_message("League", text))
             self.league_worker.finished.connect(self.league_worker_finished)
             self.league_worker.start()
@@ -150,7 +156,81 @@ class CapriWindow(QMainWindow):
         worker, self.league_worker = self.league_worker, None
         if worker is not None:
             worker.deleteLater()
+        if not self._closing:
+            self.set_league_companion_mode(False)
         self._finish_close_if_ready()
+
+    @property
+    def league_mode_active(self):
+        return self._league_mode_active
+
+    @property
+    def movement_locked(self):
+        return self._league_mode_active and config.LEAGUE_LOCK_MOVEMENT
+
+    def _league_display_changed(self, physical_bounds):
+        if self._closing:
+            return
+        self._league_window_bounds = physical_bounds
+        self._league_monitor_id = None
+        if self._league_mode_active:
+            self._dock_league(effects=False)
+
+    def _league_monitor(self):
+        monitors = self.monitor_manager.snapshot()
+        chosen = next((monitor for monitor in monitors if monitor.id == self._league_monitor_id), None)
+        if chosen is None and self._league_window_bounds is not None:
+            candidate = max(monitors, key=lambda monitor: monitor.physical.intersection(self._league_window_bounds).area,
+                            default=None)
+            if candidate and candidate.physical.intersection(self._league_window_bounds).area:
+                chosen = candidate
+        chosen = chosen or next((monitor for monitor in monitors if monitor.primary), None) or next(iter(monitors), None)
+        self._league_monitor_id = chosen.id if chosen else None
+        return chosen
+
+    def _league_visible_in_window(self):
+        return self.sprite.league_visible_rect().translated(QPointF(self.sprite.mapTo(self, QPoint(0, 0))))
+
+    def _dock_league(self, *, effects=False):
+        if self._closing or not self._league_mode_active or not config.LEAGUE_DOCK_RIGHT_ENABLED:
+            return
+        monitor = self._league_monitor()
+        if monitor is None:
+            return
+        margin = max(0, config.LEAGUE_DOCK_MARGIN_PX)
+        self.sprite.set_league_available_size(monitor.available.width - margin * 2, monitor.available.height - margin * 2)
+        self.centralWidget().layout().activate()
+        visible = self._league_visible_in_window()
+        x = round(monitor.available.right - margin - visible.right())
+        y = round(monitor.available.center[1] - visible.center().y())
+        pose = (lambda: self.sprite.set_league_mode(True)) if not self.sprite.league_mode else None
+        self.teleport_to(x, y, effects=effects, arrival_pose=pose, league_anchor=True)
+
+    def set_league_companion_mode(self, active):
+        if self._closing:
+            return
+        active = bool(active) and config.LEAGUE_COMPANION_MODE_ENABLED
+        if active == self._league_mode_active:
+            return
+        self._league_mode_active = active
+        self.context.spatial.cancel()
+        self.movement_coordinator.reset()
+        self._drag_offset = self._press_position = None
+        self._dragging = False
+        self._movement_target = self.pos()
+        self._glitch_steps = 0
+        self.sprite.set_league_speaking(self._tts_active)
+        if active:
+            if config.LEAGUE_DOCK_RIGHT_ENABLED and self._league_monitor() is not None:
+                self._dock_league(effects=True)
+            else:
+                self.sprite.set_league_mode(True)
+        else:
+            self.sprite.set_league_mode(False)
+            self._league_monitor_id = None
+            self._movement_state = self.sprite.state
+            self._next_wander_at = time.monotonic() + random.uniform(2, 4)
+            self._next_processing_teleport_at = self._next_wander_at
 
     def handle_league_notification(self, announcement):
         if self._closing or not self._advice_enabled or not config.LEAGUE_PROACTIVE_VOICE_ENABLED:
@@ -301,6 +381,7 @@ class CapriWindow(QMainWindow):
         self._stopping = False
         self._inference_busy = not proactive
         worker.status_changed.connect(self.handle_voice_status)
+        worker.playback_active_changed.connect(self.handle_playback_active, Qt.ConnectionType.QueuedConnection)
         worker.user_text.connect(self.handle_user_text)
         worker.response_ready.connect(self.handle_response)
         worker.response_partial.connect(self.handle_partial_response)
@@ -433,6 +514,8 @@ class CapriWindow(QMainWindow):
         self.chat_panel.append_message(f"Tool: {name}", preview)
 
     def handle_interrupted(self):
+        self._tts_active = False
+        self.sprite.set_league_speaking(False)
         self.sprite.clear_reaction()
         self.chat_panel.append_message("Status", "Stopped. Completed actions are retained.")
 
@@ -440,11 +523,19 @@ class CapriWindow(QMainWindow):
         if not self._stopping and not self._closing:
             self.set_status(status)
 
+    def handle_playback_active(self, active):
+        if self.sender() is not self._conversation_worker() or (active and (self._closing or self._stopping)):
+            return
+        self._tts_active = active
+        self.sprite.set_league_speaking(active)
+
     def handle_inference_active(self, active):
         self._inference_busy = active
         self._sync_vision()
 
     def handle_error(self, error):
+        self._tts_active = False
+        self.sprite.set_league_speaking(False)
         self.sprite.clear_reaction()
         self._last_error = error
         self.chat_panel.append_message("Status", f"Something failed: {error}")
@@ -468,6 +559,8 @@ class CapriWindow(QMainWindow):
             self.advice_worker = None
         else:
             return
+        self._tts_active = False
+        self.sprite.set_league_speaking(False)
         worker.deleteLater()
         self._pending_advice = None
         self._stopping = False
@@ -788,6 +881,11 @@ class CapriWindow(QMainWindow):
         self.context.spatial.cancel()
         self.movement_coordinator.reset()
         self.context.clear_screen_observation()
+        if self._league_mode_active and config.LEAGUE_DOCK_RIGHT_ENABLED:
+            self._dock_league(effects=False)
+            self._movement_target = self.pos()
+            self._update_vision_geometry()
+            return
         # Qt may already have moved a window when its screen disappears. Clamp
         # again using the current topology, without teleporting onto a dead screen.
         x, y = self._clamp_position(self.x(), self.y())
@@ -797,6 +895,8 @@ class CapriWindow(QMainWindow):
 
     def move(self, *args):
         """Existing programmatic moves also snap; drag/startup use native movement."""
+        if getattr(self, "_league_mode_active", False) and self.movement_locked:
+            return
         effects = getattr(self, "teleport_effects", None)
         if (
             effects is not None and effects.settings.enabled and self.isVisible()
@@ -811,10 +911,23 @@ class CapriWindow(QMainWindow):
         origin = self.sprite.mapToGlobal(QPoint(0, 0))
         return target.translated(QPointF(origin))
 
-    def teleport_to(self, x, y=None, *, effects=True, arrival_pose=None):
+    def teleport_to(self, x, y=None, *, effects=True, arrival_pose=None, league_anchor=False):
         """Move synchronously before constructing/showing any electrical effects."""
+        if self.movement_locked and not league_anchor:
+            return False
         position = x.toPoint() if isinstance(x, QPointF) else QPoint(x) if y is None else QPoint(int(x), int(y))
-        position = QPoint(*self._clamp_position(position.x(), position.y()))
+        if league_anchor:
+            monitor = self._league_monitor()
+            if not self._league_mode_active or monitor is None:
+                return False
+            # Only the transparent window padding may extend outside the work
+            # area. The shared visible character envelope stays fully inside.
+            visible = self._league_visible_in_window()
+            bounds = monitor.available
+            position = QPoint(round(max(bounds.x - visible.left(), min(position.x(), bounds.right - visible.right()))),
+                              round(max(bounds.y - visible.top(), min(position.y(), bounds.bottom - visible.bottom()))))
+        else:
+            position = QPoint(*self._clamp_position(position.x(), position.y()))
         if position == self.pos():
             self._movement_target = QPoint(position)
             if arrival_pose is not None:
@@ -840,12 +953,15 @@ class CapriWindow(QMainWindow):
         return True
 
     def teleport_randomly(self):
-        if self._closing or self._drag_offset is not None or self.movement_coordinator.busy:
+        if self.movement_locked or self._closing or self._drag_offset is not None or self.movement_coordinator.busy:
             return
         self._choose_movement_target()
         self.teleport_to(self._movement_target)
 
     def _set_movement_state(self, state):
+        if self.movement_locked:
+            self._movement_state = state
+            return
         if state == self._movement_state:
             return
 
@@ -858,6 +974,9 @@ class CapriWindow(QMainWindow):
             self._next_wander_at = time.monotonic() + random.uniform(1, 3)
 
     def _choose_movement_target(self, radius=None):
+        if self.movement_locked:
+            self._movement_target = self.pos()
+            return
         screen = self._active_screen()
         if screen is None:
             self._movement_target = self.pos()
@@ -885,7 +1004,7 @@ class CapriWindow(QMainWindow):
 
     def _move_pet(self):
         if (
-            self._drag_offset is not None or self.chat_panel.isVisible()
+            self.movement_locked or self._drag_offset is not None or self.chat_panel.isVisible()
             or self.controls_popup.isVisible()
             or self._inference_busy or self.movement_coordinator.busy
             or self._conversation_worker() is not None
@@ -969,6 +1088,11 @@ class CapriWindow(QMainWindow):
         self._update_vision_geometry()
         super().moveEvent(event)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_league_mode_active", False) and hasattr(self, "monitor_manager"):
+            self._dock_league(effects=False)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_position = event.globalPosition().toPoint()
@@ -983,6 +1107,9 @@ class CapriWindow(QMainWindow):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.movement_locked:
+            event.accept()
+            return
         if self._drag_offset is not None and event.buttons() & Qt.MouseButton.LeftButton:
             position = event.globalPosition().toPoint()
             if (position - self._press_position).manhattanLength() >= QApplication.startDragDistance():
@@ -1025,6 +1152,8 @@ class CapriWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._closing = True
+        self._tts_active = False
+        self.sprite.set_league_speaking(False)
         self._live_status_timer.stop()
         self._league_notice_timer.stop()
         self._deferred_screen_advice = None

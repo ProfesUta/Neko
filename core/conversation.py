@@ -5,6 +5,7 @@ import logging
 import re
 import time
 from threading import Lock
+from functools import lru_cache
 
 import httpx
 
@@ -88,6 +89,20 @@ def conversation_model():
         return selected
 
 
+def warm_up(cancel_event=None):
+    """Load the existing selected model without generating text or opening audio."""
+    check_cancelled(cancel_event)
+    request_chat(cancel_event=cancel_event, model=conversation_model(), messages=[],
+                 keep_alive=config.MODEL_KEEP_ALIVE, background=True)
+
+
+@lru_cache(maxsize=8)
+def _persona_prefix(persona):
+    # Only immutable instructions are cached. Memories, evidence and dialogue
+    # remain fresh on every request; persona edits invalidate this key naturally.
+    return persona.split("\nTOOLS:", 1)[0] + "\n" + SCREEN_ACCESS_INSTRUCTIONS + "\nCONVERSATION DELIVERY:\n"
+
+
 def conversation_messages(messages, context, game=None):
     dialogue = [{"role": item["role"], "content": item["content"]}
                 for item in messages if item.get("role") in ("user", "assistant")
@@ -103,9 +118,8 @@ def conversation_messages(messages, context, game=None):
             "league": (context.league.context_for(current) or game) if information_request(current) else None}
     data["referenced_notice"] = relevant_notice(current, messages)
     persona = next((item["content"] for item in messages if item.get("role") == "system"), config.SYSTEM_PROMPT)
-    persona = persona.split("\nTOOLS:", 1)[0]
     prompt = (
-        persona + "\n" + SCREEN_ACCESS_INSTRUCTIONS + "\nCONVERSATION DELIVERY:\n"
+        _persona_prefix(persona) +
         "Speak like an engaged friend on any topic. Briefly react to the specific message when appropriate, "
         "then answer it; urgent advice and factual questions get the useful point first. "
         "Usually use one or two short sentences totaling about 40 words or fewer, "

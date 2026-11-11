@@ -8,13 +8,15 @@ import os
 import subprocess
 import sys
 import time
+import config
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from queue import Empty, Queue
-from threading import Lock, Thread
+from queue import Empty, Full, Queue
+from threading import Event, Lock, Thread
 
 from core.cancellation import check_cancelled
+from core.latency import current_trace
 from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, validate_assets, validate_request, validate_settings
 
 
@@ -30,11 +32,13 @@ class KokoroSession:
         self._signature = None
         self._messages = None
         self._reader = None
+        self._read_stop = Event()
         self._diagnostics = deque(maxlen=8)
 
     def _shutdown_locked(self):
         process, self.process = self.process, None
         self._signature = None
+        self._read_stop.set()
         if process is None:
             return
         if process.poll() is None:
@@ -56,7 +60,14 @@ class KokoroSession:
         with self._lock:
             self._shutdown_locked()
 
-    def _read_messages(self, process, messages, diagnostics):
+    def _read_messages(self, process, messages, diagnostics, stopped):
+        def send(value):
+            while not stopped.is_set():
+                try:
+                    messages.put(value, timeout=.025)
+                    return
+                except Full:
+                    continue
         try:
             for line in process.stdout:
                 try:
@@ -65,11 +76,13 @@ class KokoroSession:
                     diagnostics.append(line.strip()[:500])
                     continue
                 if isinstance(value, dict):
-                    messages.put(value)
+                    send(value)
+                if stopped.is_set():
+                    break
         finally:
-            messages.put({"error": f"{self.name} worker exited. " + " ".join(diagnostics)})
+            send({"error": f"{self.name} worker exited. " + " ".join(diagnostics)})
 
-    def _wait(self, cancellation, deadline):
+    def _wait(self, cancellation, deadline, on_chunk=None):
         while True:
             check_cancelled(cancellation)
             if time.monotonic() >= deadline:
@@ -81,12 +94,17 @@ class KokoroSession:
             check_cancelled(cancellation)
             if "error" in message:
                 raise RuntimeError(f"{self.name} failed: {message['error']}")
+            if "chunk" in message:
+                if on_chunk is None:
+                    raise RuntimeError("Unexpected streamed audio from Kokoro")
+                on_chunk(message)
+                continue
             return message
 
     def _resources(self, asset_dir):
         directory = validate_assets(asset_dir)
         assets = [directory / name for name in ASSET_FILES] + [directory / "espeak-ng-data", CHAMPION_LEXICON]
-        return assets, [str(directory)]
+        return assets, [str(directory), str(config.KOKORO_NUM_THREADS)]
 
     def _prepare_locked(self, asset_dir, cancellation, deadline):
         assets, arguments = self._resources(asset_dir)
@@ -94,7 +112,8 @@ class KokoroSession:
         if self.process is not None and self.process.poll() is None and signature == self._signature:
             return
         self._shutdown_locked()
-        self._messages = Queue()
+        self._messages = Queue(maxsize=8)
+        self._read_stop = Event()
         self._diagnostics = deque(maxlen=8)
         self.process = subprocess.Popen(
             [sys.executable, "-u", str(Path(__file__).with_name(self.worker_filename)), *arguments],
@@ -103,7 +122,7 @@ class KokoroSession:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         self._reader = Thread(target=self._read_messages,
-                              args=(self.process, self._messages, self._diagnostics),
+                              args=(self.process, self._messages, self._diagnostics, self._read_stop),
                               name=f"Capri {self.name} output", daemon=True)
         self._reader.start()
         ready = self._wait(cancellation, deadline)
@@ -112,15 +131,21 @@ class KokoroSession:
         self._signature = signature
         logging.info("%s speech worker ready", self.name)
 
-    def request(self, asset_dir, cancellation=None, timeout=90, *, text=None, output=None, speaker=53, speed=1.1):
+    def request(self, asset_dir, cancellation=None, timeout=90, *, text=None, output=None, speaker=53, speed=1.1,
+                on_chunk=None):
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
                 or not 0 < timeout <= 3600 or not math.isfinite(timeout)):
             raise ValueError("Speech timeout must be a finite number between 0 and 3600 seconds")
         speaker, speed = validate_settings(speaker, speed)
         request = None
+        trace = current_trace()
         if text is not None:
             text, path, speaker, speed = validate_request(text, output, speaker, speed)
             request = {"text": text, "output": str(path), "speaker": speaker, "speed": speed}
+            if on_chunk is not None:
+                request["stream"] = True
+            if trace is not None:
+                request["profile"] = True
         deadline = time.monotonic() + timeout
         while not self._lock.acquire(timeout=0.05):
             check_cancelled(cancellation)
@@ -132,8 +157,13 @@ class KokoroSession:
             if request is not None:
                 self.process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
                 self.process.stdin.flush()
-                if self._wait(cancellation, deadline).get("ok") is not True:
+                result = self._wait(cancellation, deadline, on_chunk)
+                if result.get("ok") is not True:
                     raise RuntimeError(f"{self.name} did not confirm speech generation")
+                if trace is not None:
+                    for key in ("synthesis_wall_ns", "synthesis_cpu_ns"):
+                        if isinstance(result.get(key), int):
+                            trace.collector.record("native_tts_" + key.removesuffix("_ns"), result[key])
         except BaseException:
             self._shutdown_locked()
             raise

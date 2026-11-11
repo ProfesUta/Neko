@@ -4,6 +4,7 @@ import json
 import math
 import sys
 import wave
+import time
 from pathlib import Path
 
 
@@ -49,11 +50,13 @@ def validate_request(text, output, speaker=53, speed=1.1):
     return text, output, speaker, speed
 
 
-def create_tts(asset_dir):
+def create_tts(asset_dir, num_threads=2):
     # Import only in the isolated worker. Never load the native DLLs in a voice pack.
     import sherpa_onnx
 
     directory = validate_assets(asset_dir)
+    if type(num_threads) is not int or not 1 <= num_threads <= 8:
+        raise ValueError("Kokoro thread count must be between 1 and 8")
     if not CHAMPION_LEXICON.is_file():
         raise ValueError("Capri's champion pronunciation dictionary is missing")
     model = sherpa_onnx.OfflineTtsKokoroModelConfig(
@@ -65,7 +68,7 @@ def create_tts(asset_dir):
         lang="en-us",
     )
     config = sherpa_onnx.OfflineTtsConfig(
-        model=sherpa_onnx.OfflineTtsModelConfig(kokoro=model, num_threads=2, provider="cpu"),
+        model=sherpa_onnx.OfflineTtsModelConfig(kokoro=model, num_threads=num_threads, provider="cpu"),
         max_num_sentences=1,
     )
     if not config.validate():
@@ -73,7 +76,7 @@ def create_tts(asset_dir):
     return sherpa_onnx.OfflineTts(config)
 
 
-def synthesize(tts, request):
+def synthesize(tts, request, on_chunk=None):
     import numpy as np
 
     text, output, speaker, speed = validate_request(
@@ -81,31 +84,54 @@ def synthesize(tts, request):
     )
     if speaker >= tts.num_speakers:
         raise ValueError(f"Kokoro voice has {tts.num_speakers} speakers; speaker {speaker} is unavailable")
-    audio = tts.generate(text, sid=speaker, speed=speed)
+    chunk_count = 0
+    def chunk(samples, progress):
+        nonlocal chunk_count
+        path = output.with_name(f"{output.stem}-{chunk_count}.wav")
+        chunk_count += 1
+        values = np.asarray(samples, dtype=np.float32)
+        if values.ndim != 1 or not values.size or not np.isfinite(values).all():
+            raise RuntimeError("Kokoro produced an invalid audio chunk")
+        with wave.open(str(path), "wb") as stream:
+            stream.setparams((1, 2, tts.sample_rate, 0, "NONE", "not compressed"))
+            stream.writeframes((np.clip(values, -1, 1) * 32767).astype("<i2").tobytes())
+        on_chunk({"chunk": str(path), "frames": int(values.size), "sample_rate": tts.sample_rate})
+        return 1
+    options = {"callback": chunk} if on_chunk is not None else {}
+    profiled = request.get("profile") is True
+    wall, cpu = (time.perf_counter_ns(), time.process_time_ns()) if profiled else (0, 0)
+    audio = tts.generate(text, sid=speaker, speed=speed, **options)
     samples = np.asarray(audio.samples, dtype=np.float32)
     sample_rate = int(audio.sample_rate)
     if samples.ndim != 1 or samples.size == 0 or not np.isfinite(samples).all():
         raise RuntimeError("Kokoro produced invalid or empty audio")
     if not 8000 <= sample_rate <= 192000:
         raise RuntimeError("Kokoro produced an invalid sample rate")
-    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
-    with wave.open(str(output), "wb") as stream:
-        stream.setnchannels(1)
-        stream.setsampwidth(2)
-        stream.setframerate(sample_rate)
-        stream.writeframes(pcm.tobytes())
-    return {"ok": True, "sample_rate": sample_rate, "frames": int(samples.size)}
+    if on_chunk is None or chunk_count == 0:
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
+        with wave.open(str(output), "wb") as stream:
+            stream.setnchannels(1)
+            stream.setsampwidth(2)
+            stream.setframerate(sample_rate)
+            stream.writeframes(pcm.tobytes())
+        if on_chunk is not None:
+            on_chunk({"chunk": str(output), "frames": int(samples.size), "sample_rate": sample_rate})
+    result = {"ok": True, "sample_rate": sample_rate, "frames": int(samples.size)}
+    if profiled:
+        result.update(synthesis_wall_ns=time.perf_counter_ns() - wall, synthesis_cpu_ns=time.process_time_ns() - cpu)
+    return result
 
 
 def main():
-    tts = create_tts(sys.argv[1])
+    tts = create_tts(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 2)
     print(json.dumps({"ready": True, "speakers": tts.num_speakers, "sample_rate": tts.sample_rate}), flush=True)
     for line in sys.stdin:
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("Kokoro request must be a JSON object")
-            response = synthesize(tts, request)
+            emit = lambda message: print(json.dumps(message), flush=True)
+            response = synthesize(tts, request, on_chunk=emit if request.get("stream") is True else None)
         except Exception as error:
             response = {"error": str(error)}
         print(json.dumps(response, allow_nan=False), flush=True)

@@ -23,6 +23,8 @@ from core.league_metrics import LeagueMetrics
 
 
 async def microbench():
+    cpu_started = time.process_time()
+    wall_started = time.perf_counter_ns()
     metrics = LeagueMetrics(True)
     client = LeagueClient(metrics)
     client.champ_select.names.names = {103: "Ahri"}
@@ -46,7 +48,8 @@ async def microbench():
     finally:
         config.LEAGUE_PROACTIVE_VOICE_ENABLED = previous
     return {"kind": "synthetic in-process + httpx MockTransport; no real League or audio",
-            "existing_events_per_response": 300, "metrics": metrics.report()}
+            "existing_events_per_response": 300, "wall_ms": (time.perf_counter_ns() - wall_started) / 1e6,
+            "process_cpu_seconds": time.process_time() - cpu_started, "metrics": metrics.report()}
 
 
 async def polling(interval, seconds, live=False):

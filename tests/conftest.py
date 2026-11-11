@@ -13,6 +13,13 @@ from memory import database
 
 @pytest.fixture(autouse=True)
 def isolated_memory(tmp_path, monkeypatch):
+    from core.inference_priority import InferencePriority
+    priority = InferencePriority()
+    # Real-clock cooldowns must not leak into tests with fake clocks, nor may
+    # a completed test retain a foreground reservation in another test.
+    for module in ("core.inference_priority", "core.model_client", "gui.workers", "gui.vision"):
+        attribute = "priority" if module == "core.inference_priority" else "inference_priority"
+        monkeypatch.setattr(f"{module}.{attribute}", priority)
     monkeypatch.setattr(database, "DATABASE", tmp_path / "memory.db")
     # Tests must never capture the real desktop or start local model inference.
     monkeypatch.setattr("gui.window.VISION_ENABLED_BY_DEFAULT", False)
@@ -25,8 +32,17 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.LEAGUE_PROACTIVE_VOICE_ENABLED", False)
     monkeypatch.setattr("config.VISION_LIVE_CAPTURE_ENABLED", False)
     monkeypatch.setattr("config.VOICE_PRELOAD_ON_STARTUP", False)
+    monkeypatch.setattr("config.CONVERSATION_PRELOAD_ON_STARTUP", False)
     monkeypatch.setattr("config.SPEAK_TYPED_REPLIES_BY_DEFAULT", False)
     monkeypatch.setattr("config.TTS_BACKEND", "kokoro")
+    # Native-chunk tests opt in explicitly; legacy adapters mock complete WAVs.
+    monkeypatch.setattr("config.TTS_NATIVE_STREAMING_ENABLED", False)
+    monkeypatch.setattr("config.VOICE_BARGE_IN_ENABLED", False)
+    yield
+    from core.model_client import shutdown
+    from core.latency import clear_trace
+    shutdown()
+    clear_trace()
 
 
 @pytest.fixture(scope="session")

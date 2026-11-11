@@ -16,6 +16,56 @@ from core.league_metrics import LeagueMetrics
 from core.league_champ_select import ChampionSelectClient, local_tls
 
 BASE_URL = "https://127.0.0.1:2999/liveclientdata/"
+LEAGUE_LIVE_PHASES = frozenset(("GameStart", "InProgress", "Reconnect"))
+
+
+class LeagueSession:
+    """Worker-owned activity state; short transport gaps never end a session."""
+    def __init__(self):
+        self.active = False
+        self.phase = "Unavailable"
+        self.stage = "inactive"
+        self.blocked_epoch = None
+        self.uncertain_since = None
+
+    def observe(self, now, epoch, *, phase=None, live=False, ended=False, shutdown=False):
+        previous = self.active
+        old_phase = self.phase
+        if phase is not None:
+            self.phase = phase
+            if phase == "ChampSelect" and old_phase != phase:
+                self.blocked_epoch = None
+                self.stage = "select"
+            elif phase in LEAGUE_LIVE_PHASES:
+                if phase == "GameStart" and old_phase not in LEAGUE_LIVE_PHASES:
+                    self.blocked_epoch = None
+                self.stage = "live"
+        terminal_phase = phase in ("WaitingForStats", "PreEndOfGame", "EndOfGame", "TerminatedInError")
+        inactive_phase = phase in ("Lobby", "Matchmaking", "ReadyCheck")
+        if shutdown:
+            self.active, self.stage = False, "inactive"
+        elif terminal_phase or inactive_phase:
+            if terminal_phase or self.stage == "live":
+                self.blocked_epoch = epoch  # Ignore the old game's still-readable HTTP data.
+            self.active, self.stage = False, "inactive"
+            self.uncertain_since = None
+        elif ended and self.stage != "select":
+            self.blocked_epoch = epoch
+            self.active, self.stage = False, "inactive"
+            self.uncertain_since = None
+        elif live and not ended and epoch != self.blocked_epoch:
+            self.active = True
+            self.stage = "live"
+            self.uncertain_since = None
+        elif self.phase in LEAGUE_LIVE_PHASES or self.phase == "ChampSelect":
+            self.active = epoch != self.blocked_epoch
+            self.uncertain_since = None
+        elif self.active:
+            if self.uncertain_since is None:
+                self.uncertain_since = now
+            if now - self.uncertain_since >= max(1, config.LEAGUE_SESSION_GRACE_SECONDS):
+                self.active, self.stage = False, "inactive"
+        return previous != self.active
 
 
 def league_question(text, recent=(), champion_names=()):
@@ -82,6 +132,11 @@ class LeagueClient:
         self._actors = {}
         self._own_aliases = frozenset()
         self.on_notification = None
+        self.on_session_active_changed = None
+        self.on_gameflow_changed = None
+        self.on_live_game_ready = None
+        self._session_live_epoch = None
+        self._session = LeagueSession()
         self._acknowledged_picks = set()
         self._reacted_hovers = set()
         self._observed_allied_picks = set()
@@ -122,6 +177,9 @@ class LeagueClient:
         if new.phase not in ("GameStart", "InProgress", "Reconnect", "Unavailable"):
             with self._lock:
                 self._snapshot = None
+        self._observe_session(phase=new.phase)
+        if new.phase != old.phase and self.on_gameflow_changed:
+            self.on_gameflow_changed(new.phase)
         if self.on_notification:
             from core.league_voice import HOVER_REACTIONS, LOCK_REACTIONS
             if new.phase == "ChampSelect" and old.phase not in ("ChampSelect", "Unavailable"):
@@ -143,6 +201,24 @@ class LeagueClient:
                 self._lock_reaction_index += 1
                 self._notify("pick-locked", text, 2, 10, champion=new.my_champion)
         self._team_picks_changed(old, new)
+
+    @property
+    def session_active(self):
+        with self._lock:
+            return self._session.active
+
+    def _observe_session(self, **evidence):
+        with self._lock:
+            changed = self._session.observe(time.monotonic(), self.tracker.epoch, **evidence)
+            active = self._session.active
+            ready = (active and evidence.get("live") and not evidence.get("ended")
+                     and self._session_live_epoch != self.tracker.epoch)
+            if ready:
+                self._session_live_epoch = self.tracker.epoch
+        if changed and self.on_session_active_changed:
+            self.on_session_active_changed(active)
+        if ready and not changed and self.on_live_game_ready:
+            self.on_live_game_ready()
 
     def _team_picks_changed(self, old, new):
         if new.phase != "ChampSelect" or not new.selection_known:
@@ -169,15 +245,16 @@ class LeagueClient:
         self._notify("draft-picks", text, 1, 10, delay_seconds=.15, allied_picks=allied, enemy_picks=enemy)
 
     def _notify(self, key, text, priority=1, lifetime=6, champion=None, delay_seconds=0,
-                allied_picks=(), enemy_picks=()):
+                allied_picks=(), enemy_picks=(), detected_ns=0):
         if self.on_notification and config.LEAGUE_PROACTIVE_VOICE_ENABLED:
             from core.league_voice import LeagueAnnouncement
             started = self.metrics.start()
             now = time.monotonic()
+            queued = self.metrics.start() or (time.perf_counter_ns() if config.VOICE_LATENCY_METRICS_ENABLED else 0)
             self.on_notification(LeagueAnnouncement(text, key, now, lifetime, priority,
-                                                   self.metrics.start(), self.tracker.epoch,
+                                                   queued, self.tracker.epoch,
                                                    champion, now + delay_seconds if delay_seconds else 0,
-                                                   allied_picks, enemy_picks))
+                                                   allied_picks, enemy_picks, detected_ns or queued))
             self.metrics.finish("event_to_callback", started)
 
     def read(self, cancel_event=None):
@@ -251,6 +328,7 @@ class LeagueClient:
                     epoch = self.tracker.epoch
                     if self.tracker.ended:
                         self._snapshot = None
+                        # Event ingestion owns the ending transition.
                         return
                 active = await self._get(client, "activeplayer")
                 players = await self._get(client, "playerlist")
@@ -291,6 +369,7 @@ class LeagueClient:
                     self._snapshot = None
             finally:
                 self._stats_completed_at = time.monotonic()
+                self._observe_session(live=self._snapshot is not None, ended=self.tracker.ended)
 
     async def poll_events(self, client):
         started = self.metrics.start()
@@ -301,7 +380,7 @@ class LeagueClient:
             # owns tracker mutation; readers only see the published tuple.
             epoch = self.tracker.epoch
             fresh = self.tracker.ingest(data, now, self._actors)
-            detected = self.metrics.start()
+            detected = self.metrics.start() or (time.perf_counter_ns() if config.VOICE_LATENCY_METRICS_ENABLED else 0)
             with self._lock:
                 if self.tracker.epoch != epoch:
                     self._snapshot = None
@@ -312,20 +391,21 @@ class LeagueClient:
                 self._events_available, self._events_at = True, now
                 if self.tracker.ended:
                     self._snapshot = None
+            self._observe_session(live=not self.tracker.ended, ended=self.tracker.ended)
             self.metrics.finish("event_http_to_identified", started)
             for event in fresh:
                 # Sparse acknowledgments, never automatic tactical coaching.
                 if event.name == "GameEnd":
-                    self._notify("game-end", event.describe(), 3, 10)
+                    self._notify("game-end", event.describe(), 3, 10, detected_ns=detected)
                 elif event.name in ("DragonKill", "BaronKill", "HeraldKill", "TurretKilled", "InhibKilled"):
                     identity = event.event_id if event.event_id is not None else event.game_time
-                    self._notify(f"objective:{event.name}:{identity}", event.describe(), 2, 8)
+                    self._notify(f"objective:{event.name}:{identity}", event.describe(), 2, 8, detected_ns=detected)
                 elif event.name == "ChampionKill":
                     identity = event.event_id if event.event_id is not None else event.game_time
                     if event.raw_victim in self._own_aliases:
-                        self._notify(f"own-death:{identity}", "Your champion went down, chum.", 1, 10)
+                        self._notify(f"own-death:{identity}", "Your champion went down, chum.", 1, 10, detected_ns=detected)
                     elif event.raw_killer in self._own_aliases:
-                        self._notify(f"own-kill:{identity}", "You got a kill! Nice.", 1, 10)
+                        self._notify(f"own-kill:{identity}", "You got a kill! Nice.", 1, 10, detected_ns=detected)
             # Includes publication and selected callback dispatch, excludes JSON
             # parsing. Polls with no newly identified events aren't samples.
             if fresh:
@@ -335,6 +415,7 @@ class LeagueClient:
             with self._lock:
                 self._events_available = False
                 self._snapshot = None
+            self._observe_session()
             return False
 
     async def _event_loop(self, client):
@@ -378,6 +459,7 @@ class LeagueClient:
                 self._own_aliases = frozenset()
                 self.tracker.reset()
             self.champ_select.update(phase="Unavailable", clear=True)
+            self._observe_session(shutdown=True)
 
     def answer(self, text, verified_only=False):
         started = self.metrics.start()

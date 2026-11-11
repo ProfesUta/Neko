@@ -12,6 +12,8 @@ from config import ADVICE_MAX_AGE_SECONDS
 import config
 from core.cancellation import AnyEvent, OperationCancelled, check_cancelled
 from core.companion_style import reply_delivery
+from core.inference_priority import priority as inference_priority
+from core.latency import start_trace, clear_trace, use_trace, current_trace
 
 
 class _PreparedReply:
@@ -56,6 +58,16 @@ class VoiceWarmupWorker(QThread):
                     raise
                 except Exception as error:
                     errors.append(f"{label}: {error}")
+            if config.CONVERSATION_PRELOAD_ON_STARTUP:
+                from core.conversation import warm_up as warm_chat
+                try:
+                    self.status_changed.emit("Preparing conversation model")
+                    warm_chat(self._stop_event)
+                except OperationCancelled:
+                    # Foreground work may preempt this optional model warm-up.
+                    check_cancelled(self._stop_event)
+                except Exception:
+                    logging.warning("Conversation warm-up unavailable; the next request will retry")
             check_cancelled(self._stop_event)
             if errors:
                 self.warning.emit("Voice preload incomplete (can retry when enabled): " + "; ".join(errors))
@@ -72,12 +84,63 @@ class LeagueWorker(QThread):
     """One owned asyncio loop for all League I/O. Stop cancels open requests."""
     notification = Signal(object)
     warning = Signal(str)
+    session_active_changed = Signal(bool)
+    session_display_changed = Signal(object)
 
-    def __init__(self, league):
+    def __init__(self, league, grounder=None):
         super().__init__()
         self.league = league
         self._stop_event = Event()
         self._loop = self._task = None
+        self._grounder = grounder
+        self._session_active = False
+        self._game_window_found = False
+        self._display_bounds = None
+        self._display_scan_phase = None
+
+    def _resolve_session_display(self):
+        """Bounded native metadata scan on the existing League worker, never UI."""
+        if self._grounder is None or self._stop_event.is_set():
+            return
+        self._display_scan_phase = self.league.champ_select.snapshot().phase
+        try:
+            windows = self._grounder.windows(self._stop_event)
+            game = [window for window in windows if window.application.casefold() == "league of legends.exe"]
+            window = next(iter(game), None)
+            bounds = window.bounds if window else None
+            self._game_window_found = bool(game)
+            if bounds != self._display_bounds:
+                self._display_bounds = bounds
+                self.session_display_changed.emit(bounds)
+        except OperationCancelled:
+            pass
+        except Exception:
+            logging.warning("Could not identify the League display; using the primary display")
+
+    def _session_changed(self, active):
+        if active and not config.LEAGUE_COMPANION_MODE_ENABLED:
+            return
+        if active == self._session_active:
+            return
+        self._session_active = active
+        if active:
+            self._resolve_session_display()
+        else:
+            self._display_bounds = None
+            self._game_window_found = False
+            self._display_scan_phase = None
+        self.session_active_changed.emit(active)
+
+    def _gameflow_changed(self, phase):
+        if (self._session_active and phase in ("GameStart", "InProgress", "Reconnect")
+                and not self._game_window_found and phase != self._display_scan_phase):
+            # The game window can appear after champion-select docking. This is
+            # phase driven, not a second poller or a per-event window scan.
+            self._resolve_session_display()
+
+    def _live_game_ready(self):
+        if self._session_active and not self._game_window_found:
+            self._resolve_session_display()
 
     def stop(self):
         self._stop_event.set()
@@ -96,6 +159,10 @@ class LeagueWorker(QThread):
             if not self._stop_event.is_set():
                 await self.league.run()
         self.league.on_notification = self.notification.emit
+        self.league.on_session_active_changed = self._session_changed
+        self.league.on_gameflow_changed = self._gameflow_changed
+        self.league.on_live_game_ready = self._live_game_ready
+        self._session_changed(self.league.session_active)
         try:
             asyncio.run(serve())
         except asyncio.CancelledError:
@@ -106,6 +173,10 @@ class LeagueWorker(QThread):
             self.warning.emit("League awareness unavailable. Check League configuration.")
         finally:
             self.league.on_notification = None
+            self._session_changed(False)
+            self.league.on_session_active_changed = None
+            self.league.on_gameflow_changed = None
+            self.league.on_live_game_ready = None
             self._task = self._loop = None
             if self.league.metrics.enabled:
                 logging.info("League latency summary (milliseconds): %s", json.dumps(self.league.metrics.report()))
@@ -124,12 +195,15 @@ class ConversationWorker(QThread):
     advice_ready = Signal(object)
     advice_finished = Signal(object)
     advice_error = Signal(str)
+    playback_active_changed = Signal(bool)
 
     def __init__(self, messages, context):
         super().__init__()
         self.messages = messages
         self.context = context
         self._stop_event = Event()
+        self._turn_cancel = Event()
+        self._cancellation = AnyEvent(self._stop_event, self._turn_cancel)
         self._spatial_generation = None
         self._spatial_response_prepared = False
         self._streamed_reply = False
@@ -137,9 +211,21 @@ class ConversationWorker(QThread):
         self._turn_started = None
         self._first_audio_logged = False
         self._question = ""
+        self._playback_lock = Lock()
+        self._playback_active = False
+
+    def _set_playback_active(self, active):
+        with self._playback_lock:
+            if active and self._cancellation.is_set():
+                return
+            if active == self._playback_active:
+                return
+            self._playback_active = active
+        self.playback_active_changed.emit(active)
 
     def stop(self):
         self._stop_event.set()
+        self._set_playback_active(False)
         self.requestInterruption()
 
     def _answer(self, text):
@@ -152,6 +238,7 @@ class ConversationWorker(QThread):
         from core.screen_access import screen_capability_question, screen_status_reply
 
         started = time.monotonic()
+        inference_priority.user_started(self)
         self._question = text
         self._turn_started = started
         self._first_audio_logged = False
@@ -161,7 +248,7 @@ class ConversationWorker(QThread):
         self.context.pause_background_screen()
         self.messages.append({"role": "user", "content": text})
         self.user_text.emit(text)
-        check_cancelled(self._stop_event)
+        check_cancelled(self._cancellation)
         recent_users = [item for item in self.messages[:-1] if item.get("role") == "user" and not is_proactive(item)][-4:]
         league_request = league_question(text, recent_users, self.context.league.champ_select.names.names.values())
         if league_request and information_request(text) and not needs_tools(text):
@@ -175,15 +262,15 @@ class ConversationWorker(QThread):
             self.messages.append({"role": "assistant", "content": clarification})
             return clarification
         if self.context.spatial is not None:
-            self._spatial_generation = self.context.spatial.begin_turn(text, self._stop_event)
+            self._spatial_generation = self.context.spatial.begin_turn(text, self._cancellation)
             quick = parse_location_request(text) if config.SPATIAL_QUICK_ACTIONS_ENABLED else None
             if quick is not None:
                 self.status_changed.emit("Locating on screen")
                 if self.context.spatial.enabled():
-                    result = self.context.spatial.show_target(quick.query, quick.monitor_id, self._stop_event)
+                    result = self.context.spatial.show_target(quick.query, quick.monitor_id, self._cancellation)
                 else:
                     result = {"status": "disabled", "message": "Turn VISION ON so I can locate things on your screen, chum."}
-                check_cancelled(self._stop_event)
+                check_cancelled(self._cancellation)
                 self._spatial_response_prepared = result.get("status") == "pointing"
                 self.tool_result.emit("show_target", json.dumps(result, ensure_ascii=False))
                 answer = location_reply(result, quick, self._spatial_generation)
@@ -206,8 +293,8 @@ class ConversationWorker(QThread):
             and not re.search(r"\bwhere.{0,25}(enemy|jungler)\b", text, re.I)
         ):
             self.status_changed.emit("Looking at screen")
-            direct_answer = self.context.refresh_screen(text, self._stop_event, conversation=self.messages)
-            check_cancelled(self._stop_event)
+            direct_answer = self.context.refresh_screen(text, self._cancellation, conversation=self.messages)
+            check_cancelled(self._cancellation)
             status = self.context.get_screen_status()
             if capability or (not needs_tools(text) and (status["error"] or not status["enabled"])):
                 direct_answer = screen_status_reply(self.context)
@@ -215,7 +302,7 @@ class ConversationWorker(QThread):
                 _trim_history(self.messages)
                 self.messages.append({"role": "assistant", "content": direct_answer})
                 return direct_answer
-        check_cancelled(self._stop_event)
+        check_cancelled(self._cancellation)
         self.status_changed.emit("Thinking")
         if (config.CONVERSATION_STREAMING_ENABLED and not needs_tools(text)
                 and not (spatial_request(text) and needs_fresh_screen(text))):
@@ -230,10 +317,14 @@ class ConversationWorker(QThread):
                         "prepare": lambda sentence: self._prepare_stream_sentence(sentence, stream.cancellation),
                         "discard": lambda prepared: prepared.close(),
                         "min_segment_chars": config.TTS_STREAM_MIN_CHARS,
+                        "first_chunk_max_chars": config.TTS_FIRST_CHUNK_MAX_CHARS,
+                        "text_queue_limit": config.TTS_TEXT_QUEUE_LIMIT,
                     }
+                    if config.TTS_NATIVE_STREAMING_ENABLED:
+                        options["prepare_stream"] = lambda sentence, ready: self._prepare_stream_chunks(sentence, stream.cancellation, ready)
                 else:
                     speech = lambda sentence: self._stream_sentence(sentence, stream.cancellation)
-            stream = StreamingReply(self._stop_event, self.context.interaction, text,
+            stream = StreamingReply(self._cancellation, self.context.interaction, text,
                                     self.response_partial.emit, speak=speech, **options)
             try:
                 _trim_history(self.messages)
@@ -247,12 +338,14 @@ class ConversationWorker(QThread):
                 stream.abort()
                 if stream.text and self.messages[-1].get("role") == "user":
                     self.messages.append({"role": "assistant", "content": stream.text + " [Interrupted]"})
-                if isinstance(error, OperationCancelled) and stream.error and not self._stop_event.is_set():
+                if isinstance(error, OperationCancelled) and stream.error and not self._cancellation.is_set():
                     raise stream.error from error
                 raise
+            finally:
+                self._set_playback_active(False)
         return chat(
             self.messages, self.context, speak_response=False,
-            cancel_event=self._stop_event,
+            cancel_event=self._cancellation,
             status_callback=self.status_changed.emit,
             tool_callback=self.tool_result.emit,
         )
@@ -268,19 +361,19 @@ class ConversationWorker(QThread):
             answer = self.context.league.answer(text, verified_only=True)
             evidence = self.context.league.context_for(text) or {"own_player": None}
             evidence = {**evidence, "api_checked": True}
-            check_cancelled(self._stop_event)
+            check_cancelled(self._cancellation)
             self.status_changed.emit("Checking screen")
             if answer:
-                checked = self.context.check_screen(self._stop_event)
-                check_cancelled(self._stop_event)
+                checked = self.context.check_screen(self._cancellation)
+                check_cancelled(self._cancellation)
                 if checked["status"] != "checked":
                     return "The League API says: " + answer + " I couldn't also check the screen right now."
                 return answer
             status = self.context.get_screen_status()
             if not status["enabled"]:
                 return "I checked the League API, but it doesn't verify that answer. Turn VISION ON so I can check the screen too."
-            answer = self.context.refresh_screen(text, self._stop_event, conversation=self.messages, league_context=evidence)
-            check_cancelled(self._stop_event)
+            answer = self.context.refresh_screen(text, self._cancellation, conversation=self.messages, league_context=evidence)
+            check_cancelled(self._cancellation)
             if self.context.get_screen_status()["error"]:
                 return "I checked the League API. " + screen_status_reply(self.context)
             return answer or UNVERIFIED
@@ -291,7 +384,7 @@ class ConversationWorker(QThread):
         if self.context.spatial is not None and self._spatial_generation is not None:
             # A direct result was just acknowledged by the GUI with no intervening
             # inference. Speech still revalidates after synthesis, before playback.
-            replacement = None if self._spatial_response_prepared else self.context.spatial.prepare_response(self._stop_event)
+            replacement = None if self._spatial_response_prepared else self.context.spatial.prepare_response(self._cancellation)
             self._spatial_response_prepared = False
             answer = replacement or self.context.spatial.guard_response(answer)
             if self.messages and self.messages[-1].get("role") == "assistant":
@@ -299,6 +392,8 @@ class ConversationWorker(QThread):
         return answer
 
     def _finish_spatial(self):
+        inference_priority.user_finished(self)
+        clear_trace()
         generation, self._spatial_generation = self._spatial_generation, None
         self._turn_started = None
         self._question = ""
@@ -308,18 +403,23 @@ class ConversationWorker(QThread):
     def _stream_sentence(self, sentence, cancellation):
         if self.context.spatial is not None:
             sentence = self.context.spatial.guard_response(sentence)
-        self._speak(sentence, cancel_event=cancellation)
+        self._speak(sentence, cancel_event=cancellation, stream_segment=True)
 
     def _prepare_stream_sentence(self, sentence, cancellation):
         if self.context.spatial is not None:
             sentence = self.context.spatial.guard_response(sentence)
         return self._speak(sentence, cancel_event=cancellation, prepare_only=True)
 
-    def _speak(self, answer, cancel_event=None, start_deadline=None, urgent=False, prepare_only=False,
-               playback_guard=None, on_started=None):
-        from voice.tts import prepare_speech, speak
+    def _prepare_stream_chunks(self, sentence, cancellation, ready):
+        if self.context.spatial is not None:
+            sentence = self.context.spatial.guard_response(sentence)
+        return self._speak(sentence, cancel_event=cancellation, prepare_only=True, deliver=ready)
 
-        check_cancelled(self._stop_event)
+    def _speak(self, answer, cancel_event=None, start_deadline=None, urgent=False, prepare_only=False,
+               playback_guard=None, on_started=None, deliver=None, stream_segment=False):
+        from voice.tts import prepare_speech, speak, stream_speech
+
+        check_cancelled(self._cancellation)
         if not prepare_only:
             self.status_changed.emit("Speaking")
         spoken_answer = answer
@@ -331,10 +431,11 @@ class ConversationWorker(QThread):
                 if not playback_guard():
                     raise OperationCancelled()
             options["before_playback"] = guard
-        if self.context.spatial is not None and self._spatial_generation is not None:
+        if (self.context.spatial is not None and self._spatial_generation is not None
+                and getattr(self.context.spatial, "response_requires_confirmation", lambda: True)()):
             def confirm_pointing():
                 nonlocal spoken_answer, delivery
-                replacement = self.context.spatial.prepare_response(self._stop_event)
+                replacement = self.context.spatial.prepare_response(self._cancellation)
                 if replacement and replacement != spoken_answer:
                     spoken_answer = replacement
                     delivery = reply_delivery(self._question, replacement, urgent=urgent)
@@ -347,6 +448,7 @@ class ConversationWorker(QThread):
         def started():
             nonlocal playback_started
             playback_started = True
+            self._set_playback_active(True)
             if on_started:
                 on_started()
             self.status_changed.emit("Speaking")
@@ -361,17 +463,30 @@ class ConversationWorker(QThread):
             if playback_started:
                 self.context.interaction.record_spoken(spoken_answer)
         if prepare_only:
-            prepared = prepare_speech(answer, cancel_event=cancel_event or self._stop_event,
+            if deliver is not None and not options.get("before_playback") and start_deadline is None:
+                return stream_speech(answer, deliver, cancel_event=cancel_event or self._cancellation,
+                                     on_playback_start=started, on_finished=finished, style=delivery.style)
+            prepared = prepare_speech(answer, cancel_event=cancel_event or self._cancellation,
                                       on_playback_start=started, **options)
-            return _PreparedReply(prepared, finished) if prepared is not None else None
+            result = _PreparedReply(prepared, finished) if prepared is not None else None
+            if deliver is not None:
+                if result is not None:
+                    deliver(result)
+                return
+            return result
         try:
-            speak(answer, cancel_event=cancel_event or self._stop_event, on_playback_start=started, **options)
+            speak(answer, cancel_event=cancel_event or self._cancellation, on_playback_start=started, **options)
         finally:
             finished()
+            if not stream_segment:
+                self._set_playback_active(False)
 
     def _play_advice(self, advice, cancel_event):
         from core.league_voice import LeagueAnnouncement
         league_event = isinstance(advice, LeagueAnnouncement)
+        trace = start_trace()
+        if trace and league_event and advice.queued_ns:
+            trace.mark("league_detected", advice.detected_ns or advice.queued_ns)
         def current():
             return (advice.is_fresh() and self.context.interaction.allows_advice(advice.captured_at)
                     and not self.context.interaction.repeats_recent_response(advice.text)
@@ -380,7 +495,7 @@ class ConversationWorker(QThread):
         try:
             if not current():
                 return
-            cancellation = AnyEvent(self._stop_event, cancel_event)
+            cancellation = AnyEvent(self._cancellation, cancel_event)
             check_cancelled(cancellation)
             self.advice_ready.emit(advice)
             options = {"playback_guard": current}
@@ -396,6 +511,7 @@ class ConversationWorker(QThread):
             self.advice_error.emit(str(error))
         finally:
             self.advice_finished.emit(advice)
+            clear_trace()
 
     def _report_error(self, error):
         logging.exception("Conversation failed")
@@ -415,6 +531,8 @@ class ChatWorker(ConversationWorker):
         self._speak_reply_enabled = speak_reply
 
     def run(self):
+        if current_trace() is None:
+            start_trace()
         try:
             self.inference_active.emit(True)
             answer = self._prepare_spatial_response(self._answer(self.text))
@@ -446,6 +564,8 @@ class AdviceWorker(ConversationWorker):
             self._play_advice(self.advice, self._stop_event)
         except OperationCancelled:
             pass
+        finally:
+            self._set_playback_active(False)
 
 
 class VoiceWorker(ConversationWorker):
@@ -458,6 +578,10 @@ class VoiceWorker(ConversationWorker):
         self._active_advice_cancel = None
         self._speech_started_at = None
         self._microphone_muted = Event()
+        self._turn_lock = Lock()
+        self._input_generation = 0
+        self._turn_active = False
+        self._input_pump = None
         self.context.interaction.set_microphone_enabled(True)
 
     def microphone_enabled(self):
@@ -510,6 +634,7 @@ class VoiceWorker(ConversationWorker):
             return
         # Set priority synchronously, before the GUI receives the status signal.
         self._speech_started_at = time.monotonic()
+        inference_priority.user_started(self)
         self.context.interaction.begin_user_turn()
         self.context.pause_background_screen()
         self.inference_active.emit(True)
@@ -517,6 +642,16 @@ class VoiceWorker(ConversationWorker):
         if self.context.spatial is not None:
             self.context.spatial.cancel()
         self.status_changed.emit("Speech detected")
+
+    def _barge_in_started(self):
+        with self._turn_lock:
+            self._input_generation += 1
+            if self._turn_active:
+                self._turn_cancel.set()
+            generation = self._input_generation
+        self._on_speech_start()
+        self._set_playback_active(False)
+        return generation
 
     def run(self):
         try:
@@ -536,23 +671,46 @@ class VoiceWorker(ConversationWorker):
             self.inference_active.emit(False)
 
             recording_cancellation = AnyEvent(self._stop_event, self._microphone_muted)
+            if config.VOICE_BARGE_IN_ENABLED:
+                from voice.capture import CapturePump
+                self._input_pump = CapturePump(recording_cancellation, self._barge_in_started, record_until_silence)
+                self._input_pump.start()
             while self.microphone_enabled():
                 self._deliver_pending_advice()
                 check_cancelled(self._stop_event)
-                if recording_cancellation.wait(self.context.interaction.microphone_delay()):
+                # Headphone capture is already live; a speaker echo-tail delay
+                # would unnecessarily hold a newly captured interruption.
+                delay = self.context.interaction.microphone_delay() if self._input_pump is None else 0
+                if recording_cancellation.wait(delay):
                     break
                 self.status_changed.emit("Listening")
-                self._speech_started_at = None
-                audio = record_until_silence(
-                    recording_cancellation,
-                    on_speech_start=self._on_speech_start,
-                    idle_interrupt_event=self._advice_available,
-                )
+                if self._input_pump is not None:
+                    item = self._input_pump.take(recording_cancellation, self._advice_available)
+                    audio = item.audio if item is not None else None
+                    if item is not None:
+                        with self._turn_lock:
+                            if item.generation != self._input_generation:
+                                continue
+                            self._turn_cancel.clear()
+                            self._turn_active = True
+                        self._speech_started_at = item.started_at
+                        use_trace(item.trace)
+                else:
+                    start_trace()
+                    self._speech_started_at = None
+                    audio = record_until_silence(
+                        recording_cancellation,
+                        on_speech_start=self._on_speech_start,
+                        idle_interrupt_event=self._advice_available,
+                    )
                 check_cancelled(self._stop_event)
                 if self._microphone_muted.is_set():
                     break
                 if audio is None:
-                    self.context.interaction.finish_user_turn()
+                    if self._input_pump is None or not self._input_pump.has_input():
+                        inference_priority.user_finished(self)
+                        clear_trace()
+                        self.context.interaction.finish_user_turn()
                     self.inference_active.emit(False)
                     continue
 
@@ -560,8 +718,8 @@ class VoiceWorker(ConversationWorker):
                     self.inference_active.emit(True)
                     try:
                         self.status_changed.emit("Transcribing")
-                        text = transcribe_audio(audio, cancel_event=self._stop_event)
-                        check_cancelled(self._stop_event)
+                        text = transcribe_audio(audio, cancel_event=self._cancellation)
+                        check_cancelled(self._cancellation)
                         if not text:
                             continue
                         if self.context.interaction.is_probable_echo(text, captured_at=self._speech_started_at):
@@ -570,7 +728,7 @@ class VoiceWorker(ConversationWorker):
                         answer = self._prepare_spatial_response(self._answer(text))
                     finally:
                         self.inference_active.emit(False)
-                    check_cancelled(self._stop_event)
+                    check_cancelled(self._cancellation)
                     speak_allowed = self.context.interaction.accept_answer(answer, text, suppress_duplicates=True)
                     if not speak_allowed and not self._streamed_reply:
                         logging.info("Suppressed a repeated voice answer")
@@ -584,15 +742,30 @@ class VoiceWorker(ConversationWorker):
                         check_cancelled(self._stop_event)
                     except Exception as error:
                         self._report_error(error)
+                except OperationCancelled:
+                    check_cancelled(self._stop_event)
                 finally:
+                    with self._turn_lock:
+                        self._turn_active = False
                     self._finish_spatial()
                     self.context.interaction.finish_user_turn()
+                    if self._input_pump is not None and self._input_pump.has_input():
+                        inference_priority.user_started(self)
+                        self.context.interaction.begin_user_turn()
         except OperationCancelled:
             if self._stop_event.is_set():
                 self.interrupted.emit()
         except Exception as error:
             self._report_error(error)
         finally:
+            if self._input_pump is not None:
+                try:
+                    self._input_pump.close()
+                except Exception as error:
+                    self._report_error(error)
+            self._set_playback_active(False)
+            inference_priority.user_finished(self)
+            clear_trace()
             self.cancel_advice()
             self.context.interaction.set_microphone_enabled(False)
             self.context.interaction.finish_user_turn()

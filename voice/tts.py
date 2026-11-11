@@ -7,12 +7,13 @@ import tempfile
 import time
 import wave
 from pathlib import Path
-from threading import Event
+from threading import Event, Lock
 
 from config import TTS_TIMEOUT_SECONDS
 import config
 from core.cancellation import AnyEvent, DeadlineEvent, check_cancelled
 from voice.pronunciation import prepare_kokoro_text
+from core.latency import current_trace, mark, span, trace_scope
 
 
 def kokoro_settings(style=None):
@@ -63,8 +64,9 @@ def _synthesize(text, output_path, cancel_event, style=None):
     _require_kokoro()
     from voice.kokoro_session import session
     try:
-        session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
-                        text=prepare_kokoro_text(text), output=output_path, **kokoro_settings(style))
+        with span("tts_synthesis"):
+            session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
+                            text=prepare_kokoro_text(text), output=output_path, **kokoro_settings(style))
     finally:
         if not config.TTS_PERSISTENT_ENABLED:
             session.shutdown()
@@ -81,7 +83,7 @@ def warm_up(cancel_event=None):
 
 def _play_wav(path, cancel_event, on_playback_start=None):
     import numpy as np
-    import sounddevice as sd
+    from voice.playback import play_samples
 
     with wave.open(str(path), "rb") as audio:
         if audio.getsampwidth() != 2:
@@ -90,18 +92,7 @@ def _play_wav(path, cancel_event, on_playback_start=None):
         data = data.reshape(-1, audio.getnchannels())
         rate = audio.getframerate()
     check_cancelled(cancel_event)
-    try:
-        sd.play(data, samplerate=rate)
-        if on_playback_start:
-            on_playback_start()
-        while sd.get_stream().active:
-            check_cancelled(cancel_event)
-            if cancel_event is not None:
-                cancel_event.wait(0.03)
-            else:
-                time.sleep(0.03)
-    finally:
-        sd.stop()
+    play_samples(data, rate, cancel_event, on_playback_start)
 
 
 class PreparedSpeech:
@@ -118,6 +109,7 @@ class PreparedSpeech:
         self._before_playback = before_playback
         self._settings = settings
         self._closed = self._used = False
+        self._trace = current_trace()
 
     def play(self):
         if self._closed or self._used:
@@ -133,10 +125,11 @@ class PreparedSpeech:
                 _synthesize(self.text, self.path, self._start_cancellation, **self._settings)
                 check_cancelled(self._start_cancellation)
         # A tip's freshness deadline applies to starting, not to finishing it.
-        if self._on_playback_start is None:
-            _play_wav(self.path, self._cancel_event)
-        else:
-            _play_wav(self.path, self._cancel_event, self._on_playback_start)
+        with trace_scope(self._trace):
+            if self._on_playback_start is None:
+                _play_wav(self.path, self._cancel_event)
+            else:
+                _play_wav(self.path, self._cancel_event, self._on_playback_start)
 
     def close(self):
         if not self._closed:
@@ -156,6 +149,7 @@ def prepare_speech(text: str, cancel_event=None, start_deadline=None, on_playbac
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
+    mark("tts_submitted")
     start_cancellation = cancel_event
     if start_deadline is not None:
         start_cancellation = AnyEvent(cancel_event or Event(), DeadlineEvent(start_deadline))
@@ -164,6 +158,7 @@ def prepare_speech(text: str, cancel_event=None, start_deadline=None, on_playbac
                             cancel_event, start_cancellation, on_playback_start, before_playback, settings)
     try:
         _synthesize(cleaned, speech.path, start_cancellation, **settings)
+        mark("audio_ready")
         check_cancelled(start_cancellation)
         return speech
     except BaseException:
@@ -177,3 +172,95 @@ def speak(text: str, cancel_event=None, start_deadline=None, on_playback_start=N
     if speech is not None:
         with speech:
             speech.play()
+
+
+class _AudioChunks:
+    """Own one native utterance until generation and every queued chunk finish."""
+    def __init__(self, cancellation, on_started, on_finished):
+        self.directory = tempfile.TemporaryDirectory(prefix="capri-stream-")
+        self.cancellation = cancellation
+        self.on_started, self.on_finished = on_started, on_finished
+        self.lock = Lock()
+        self.refs = 0
+        self.done = self.closed = self.started = False
+        self.trace = current_trace()
+
+    def started_playing(self):
+        if not self.started:
+            self.started = True
+            if self.on_started:
+                self.on_started()
+
+    def release(self, generated=False):
+        with self.lock:
+            if generated:
+                self.done = True
+            else:
+                self.refs -= 1
+            close = self.done and self.refs == 0 and not self.closed
+            if close:
+                self.closed = True
+        if close:
+            try:
+                if self.started and self.on_finished:
+                    self.on_finished()
+            finally:
+                self.directory.cleanup()
+
+
+class _AudioChunk:
+    def __init__(self, owner, path):
+        self.owner, self.path = owner, path
+        self.closed = self.used = False
+
+    def play(self):
+        if self.closed or self.used:
+            raise RuntimeError("Audio chunk was already consumed")
+        self.used = True
+        check_cancelled(self.owner.cancellation)
+        with trace_scope(self.owner.trace):
+            _play_wav(self.path, self.owner.cancellation, self.owner.started_playing)
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.owner.release()
+
+
+def stream_speech(text, on_ready, cancel_event=None, on_playback_start=None, on_finished=None, style=None):
+    """Kokoro's actual native chunks, using the existing synthesis/audio threads.
+
+Does not claim intra-phoneme streaming: callback granularity is chosen by Kokoro.
+Spatial/deadline guarded replies retain the complete-WAV validation path.
+"""
+    from voice.kokoro_session import session
+    check_cancelled(cancel_event)
+    cleaned = clean_for_speech(text)
+    if not cleaned:
+        return
+    mark("tts_submitted")
+    _require_kokoro()
+    owner = _AudioChunks(cancel_event, on_playback_start, on_finished)
+    output = Path(owner.directory.name) / "reply.wav"
+    def ready(message):
+        check_cancelled(cancel_event)
+        path = Path(message["chunk"]).resolve()
+        if path.parent != output.parent.resolve() or not path.is_file():
+            raise RuntimeError("Kokoro returned an invalid audio chunk path")
+        mark("audio_ready")
+        with owner.lock:
+            owner.refs += 1
+        chunk = _AudioChunk(owner, path)
+        try:
+            on_ready(chunk)
+        except BaseException:
+            chunk.close()
+            raise
+    try:
+        with span("tts_stream_generation"):
+            session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
+                text=prepare_kokoro_text(cleaned), output=output, on_chunk=ready, **kokoro_settings(style))
+    finally:
+        owner.release(generated=True)
+        if not config.TTS_PERSISTENT_ENABLED:
+            session.shutdown()

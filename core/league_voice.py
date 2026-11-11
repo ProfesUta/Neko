@@ -50,6 +50,7 @@ class LeagueAnnouncement:
     not_before: float = 0.0
     allied_picks: tuple = ()
     enemy_picks: tuple = ()
+    detected_ns: int = 0
 
     def is_fresh(self):
         return 0 <= time.monotonic() - self.captured_at <= self.lifetime

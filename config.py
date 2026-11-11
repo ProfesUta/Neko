@@ -8,17 +8,25 @@ CONVERSATION_STREAMING_ENABLED = True
 CONVERSATION_MAX_TOKENS = 256
 CONVERSATION_HISTORY_TURNS = 6
 MODEL_KEEP_ALIVE = "15m"
+CONVERSATION_PRELOAD_ON_STARTUP = os.getenv("CAPRI_PRELOAD_CHAT", "1") != "0"
 LEAGUE_LIVE_DATA_ENABLED = os.getenv("CAPRI_LEAGUE", "1") != "0"
 LEAGUE_REQUEST_TIMEOUT_SECONDS = 0.4
 LEAGUE_CACHE_SECONDS = 1.0
 # Read-only League telemetry runs independently of screen capture and Ollama.
 LEAGUE_CHAMP_SELECT_ENABLED = LEAGUE_LIVE_DATA_ENABLED
+LEAGUE_COMPANION_MODE_ENABLED = os.getenv("CAPRI_LEAGUE_COMPANION", "1") != "0"
+LEAGUE_DOCK_RIGHT_ENABLED = os.getenv("CAPRI_LEAGUE_DOCK_RIGHT", "1") != "0"
+LEAGUE_DOCK_MARGIN_PX = 8
+LEAGUE_LOCK_MOVEMENT = True
+LEAGUE_LOOKING_SPRITE = "GameLooking.svg"
+LEAGUE_TALKING_SPRITE = "GameTalking.svg"
+LEAGUE_SESSION_GRACE_SECONDS = 10.0
 LEAGUE_EVENTS_ENABLED = LEAGUE_LIVE_DATA_ENABLED
 LEAGUE_EVENT_POLL_INTERVAL = 0.25  # Seconds; stats keep their slower 1s cadence.
 LEAGUE_CHAMP_SELECT_FALLBACK_INTERVAL = 5.0
 LEAGUE_PROACTIVE_VOICE_ENABLED = True  # Speaks with MIC OFF; ADVICE ON/OFF controls notices.
 LEAGUE_EVENT_HISTORY_LIMIT = 64
-LEAGUE_LATENCY_METRICS_ENABLED = False  # Bounded samples; no per-event logging.
+LEAGUE_LATENCY_METRICS_ENABLED = os.getenv("CAPRI_LATENCY_METRICS", "0") == "1"
 LEAGUE_LOCKFILE_PATHS = tuple(filter(None, os.getenv("CAPRI_LEAGUE_LOCKFILES", "").split(os.pathsep)))
 # Optional Riot root PEM. Otherwise TLS verification is disabled ONLY for the
 # fixed 127.0.0.1 APIs (no redirects, proxies, external credentials, or input).
@@ -87,6 +95,7 @@ SPATIAL_QUICK_ACTIONS_ENABLED = True
 # Normalized fingertip position in the original pointingLeft.svg view box.
 POINTING_LEFT_HAND_ANCHOR = (0.17, 0.25)
 WHISPER_MODEL = os.getenv("CAPRI_WHISPER_MODEL", "base")
+WHISPER_DEVICE = os.getenv("CAPRI_WHISPER_DEVICE", "cpu" if WHISPER_MODEL in ("tiny", "tiny.en", "base", "base.en") else "auto").lower()
 VOICE_PRELOAD_ON_STARTUP = os.getenv("CAPRI_PRELOAD_VOICE", "1") != "0"
 SPEAK_TYPED_REPLIES_BY_DEFAULT = os.getenv("CAPRI_SPEECH", "1") != "0"  # Independent of MIC ON/OFF.
 WHISPER_LANGUAGE = os.getenv("CAPRI_WHISPER_LANGUAGE", "en")
@@ -98,9 +107,18 @@ TTS_BACKEND = os.getenv("CAPRI_TTS_BACKEND", "kokoro").lower()
 KOKORO_VOICE_DIR = Path(os.getenv("CAPRI_VOICE_DIR", str(Path(__file__).resolve().parent / "assets" / "voices" / "capri-kokoro")))
 KOKORO_SPEAKER_ID = 53
 KOKORO_SPEED = 1.1
+KOKORO_NUM_THREADS = int(os.getenv("CAPRI_TTS_THREADS", "4"))
+TTS_AUDIO_BLOCK_MS = 10
 TTS_PERSISTENT_ENABLED = True
 TTS_PREFETCH_ENABLED = True
 TTS_STREAM_MIN_CHARS = 32  # Group tiny interjections into natural spoken phrases.
+TTS_FIRST_CHUNK_MAX_CHARS = 80  # Prefer an early complete clause, never a partial word.
+TTS_TEXT_QUEUE_LIMIT = 16
+TTS_NATIVE_STREAMING_ENABLED = True  # Kokoro callbacks; same model, speaker and speed.
+VOICE_LATENCY_METRICS_ENABLED = os.getenv("CAPRI_LATENCY_METRICS", "0") == "1"
+VOICE_BARGE_IN_ENABLED = os.getenv("CAPRI_BARGE_IN", "0") == "1"  # Headphones: no acoustic echo canceller.
+INFERENCE_PRIORITY_ENABLED = True
+INFERENCE_BACKGROUND_QUIET_SECONDS = 2.0
 TTS_STYLE_ENABLED = True
 
 

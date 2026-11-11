@@ -8,8 +8,9 @@ from collections import deque
 from pathlib import Path
 from threading import Lock
 
-from config import MAX_RECORD_SECONDS, WHISPER_BEAM_SIZE, WHISPER_LANGUAGE, WHISPER_MODEL, VOICE_SILENCE_MS
+from config import MAX_RECORD_SECONDS, WHISPER_BEAM_SIZE, WHISPER_LANGUAGE, WHISPER_MODEL, WHISPER_DEVICE, VOICE_SILENCE_MS
 from core.cancellation import check_cancelled
+from core.latency import current_trace, mark, span
 
 SAMPLE_RATE = 16000
 VAD_CHUNK_SIZE = 512  # 32 ms at 16 kHz.
@@ -55,11 +56,19 @@ def _load_models_locked(cancel_event):
     from silero_vad import VADIterator, load_silero_vad
 
     if whisper_model is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if WHISPER_DEVICE not in ("auto", "cpu", "cuda"):
+            raise ValueError("CAPRI_WHISPER_DEVICE must be auto, cpu or cuda")
+        device = WHISPER_DEVICE
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        elif device == "cuda" and not torch.cuda.is_available():
+            logging.warning("CUDA recognition is unavailable; using CPU int8")
+            device = "cpu"
         whisper_model = WhisperModel(
             WHISPER_MODEL, device=device,
             compute_type="float16" if device == "cuda" else "int8",
         )
+        logging.info("Speech recognition ready on %s", device)
     check_cancelled(cancel_event)
     if vad_iterator is None:
         vad_iterator = VADIterator(
@@ -80,6 +89,8 @@ def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_e
     speech_started_at = None
     started_at = time.monotonic()
     vad_iterator.reset_states()
+    trace = current_trace()
+    samples_read = 0
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE, channels=1, dtype="float32",
@@ -94,6 +105,7 @@ def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_e
                 break
 
             chunk, _overflowed = stream.read(VAD_CHUNK_SIZE)
+            samples_read += VAD_CHUNK_SIZE
             chunk = chunk.copy()
             if speech_started_at is None:
                 pre_roll.append(chunk)
@@ -109,6 +121,14 @@ def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_e
                 if on_speech_start:
                     on_speech_start()
             elif speech and "end" in speech and speech_started_at is not None:
+                if trace is not None:
+                    detected = time.perf_counter_ns()
+                    # Silero returns a padded sample index. Relate it to the
+                    # delivered input blocks; device/acoustic latency is unknown.
+                    end = max(0, speech["end"] - getattr(vad_iterator, "speech_pad_samples", 3200))
+                    estimate = detected - int(max(0, samples_read - end) * 1e9 / SAMPLE_RATE)
+                    trace.mark("speech_end_estimate", estimate)
+                    trace.mark("vad_detected", detected)
                 break
             if (
                 speech_started_at is None and idle_interrupt_event is not None
@@ -123,6 +143,13 @@ def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_e
 
 
 def transcribe_audio(audio, cancel_event=None):
+    with span("stt"):
+        text = _transcribe_audio(audio, cancel_event)
+    mark("stt_complete")
+    return text
+
+
+def _transcribe_audio(audio, cancel_event=None):
     if audio is None:
         return ""
     check_cancelled(cancel_event)
