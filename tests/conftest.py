@@ -1,5 +1,6 @@
 import os
 import time
+import gc
 from pathlib import Path
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -35,6 +36,8 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.CONVERSATION_PRELOAD_ON_STARTUP", False)
     monkeypatch.setattr("config.SPEAK_TYPED_REPLIES_BY_DEFAULT", False)
     monkeypatch.setattr("config.TTS_BACKEND", "kokoro")
+    # Private pronunciation choices are opt-in fixtures, never personal test data.
+    monkeypatch.setattr("config.PERSONAL_PRONUNCIATIONS_FILE", None)
     # Native-chunk tests opt in explicitly; legacy adapters mock complete WAVs.
     monkeypatch.setattr("config.TTS_NATIVE_STREAMING_ENABLED", False)
     monkeypatch.setattr("config.VOICE_BARGE_IN_ENABLED", False)
@@ -43,6 +46,17 @@ def isolated_memory(tmp_path, monkeypatch):
     from core.latency import clear_trace
     shutdown()
     clear_trace()
+    # Tests pump events manually rather than running QApplication.exec(). That
+    # does not drain deferred QObject deletions automatically. Dispose them and
+    # collect closed widget cycles here, on their GUI thread, before a later
+    # transport/cancellation thread happens to trigger Python GC.
+    from PySide6.QtCore import QEvent
+    app = QApplication.instance()
+    if app is not None:
+        app.processEvents()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.fixture(scope="session")

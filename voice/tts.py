@@ -65,8 +65,10 @@ def _synthesize(text, output_path, cancel_event, style=None):
     from voice.kokoro_session import session
     try:
         with span("tts_synthesis"):
+            with span("tts_pronunciation"):
+                pronounced = prepare_kokoro_text(text)
             session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
-                            text=prepare_kokoro_text(text), output=output_path, **kokoro_settings(style))
+                            text=pronounced, output=output_path, **kokoro_settings(style))
     finally:
         if not config.TTS_PERSISTENT_ENABLED:
             session.shutdown()
@@ -92,6 +94,7 @@ def _play_wav(path, cancel_event, on_playback_start=None):
         data = data.reshape(-1, audio.getnchannels())
         rate = audio.getframerate()
     check_cancelled(cancel_event)
+    mark("pcm_ready")
     play_samples(data, rate, cancel_event, on_playback_start)
 
 
@@ -146,7 +149,8 @@ class PreparedSpeech:
 def prepare_speech(text: str, cancel_event=None, start_deadline=None, on_playback_start=None, before_playback=None, style=None):
     """Generate without playing, keeping cancellation and temporary-file ownership."""
     check_cancelled(cancel_event)
-    cleaned = clean_for_speech(text)
+    with span("tts_text_cleaning"):
+        cleaned = clean_for_speech(text)
     if not cleaned:
         return
     mark("tts_submitted")
@@ -235,7 +239,8 @@ Spatial/deadline guarded replies retain the complete-WAV validation path.
 """
     from voice.kokoro_session import session
     check_cancelled(cancel_event)
-    cleaned = clean_for_speech(text)
+    with span("tts_text_cleaning"):
+        cleaned = clean_for_speech(text)
     if not cleaned:
         return
     mark("tts_submitted")
@@ -258,8 +263,10 @@ Spatial/deadline guarded replies retain the complete-WAV validation path.
             raise
     try:
         with span("tts_stream_generation"):
+            with span("tts_pronunciation"):
+                pronounced = prepare_kokoro_text(cleaned)
             session.request(config.KOKORO_VOICE_DIR, cancel_event, TTS_TIMEOUT_SECONDS,
-                text=prepare_kokoro_text(cleaned), output=output, on_chunk=ready, **kokoro_settings(style))
+                text=pronounced, output=output, on_chunk=ready, **kokoro_settings(style))
     finally:
         owner.release(generated=True)
         if not config.TTS_PERSISTENT_ENABLED:

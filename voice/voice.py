@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Lock
 
 from config import MAX_RECORD_SECONDS, WHISPER_BEAM_SIZE, WHISPER_LANGUAGE, WHISPER_MODEL, WHISPER_DEVICE, VOICE_SILENCE_MS
+import config
 from core.cancellation import check_cancelled
 from core.latency import current_trace, mark, span
 
@@ -64,9 +65,13 @@ def _load_models_locked(cancel_event):
         elif device == "cuda" and not torch.cuda.is_available():
             logging.warning("CUDA recognition is unavailable; using CPU int8")
             device = "cpu"
+        thread_options = {}
+        if device == "cpu" and config.WHISPER_CPU_THREADS > 0:
+            thread_options["cpu_threads"] = min(16, config.WHISPER_CPU_THREADS)
         whisper_model = WhisperModel(
             WHISPER_MODEL, device=device,
             compute_type="float16" if device == "cuda" else "int8",
+            **thread_options,
         )
         logging.info("Speech recognition ready on %s", device)
     check_cancelled(cancel_event)
@@ -139,10 +144,15 @@ def record_until_silence(stop_event=None, on_speech_start=None, idle_interrupt_e
     check_cancelled(stop_event)
     if speech_started_at is None or not recorded_chunks:
         return None
-    return np.concatenate(recorded_chunks, axis=0)[:, 0]
+    mark("capture_stopped")
+    with span("capture_assembly"):
+        audio = np.concatenate(recorded_chunks, axis=0)[:, 0]
+    mark("capture_complete")
+    return audio
 
 
 def transcribe_audio(audio, cancel_event=None):
+    mark("stt_started")
     with span("stt"):
         text = _transcribe_audio(audio, cancel_event)
     mark("stt_complete")
@@ -153,30 +163,35 @@ def _transcribe_audio(audio, cancel_event=None):
     if audio is None:
         return ""
     check_cancelled(cancel_event)
-    segments, _info = whisper_model.transcribe(
-        audio, language=WHISPER_LANGUAGE, beam_size=max(1, min(10, WHISPER_BEAM_SIZE)),
-        condition_on_previous_text=False,
-        vad_filter=True,
-        no_speech_threshold=0.6,
-        log_prob_threshold=-1.0,
-        compression_ratio_threshold=2.4,
-    )
+    # faster-whisper eagerly filters/extracts features, then lazily decodes
+    # while consuming segments. Keep those wall/CPU spans separate.
+    with span("stt_frontend"):
+        segments, _info = whisper_model.transcribe(
+            audio, language=WHISPER_LANGUAGE, beam_size=max(1, min(10, WHISPER_BEAM_SIZE)),
+            condition_on_previous_text=False,
+            without_timestamps=config.WHISPER_WITHOUT_TIMESTAMPS,
+            vad_filter=True,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.4,
+        )
     text = []
     previous = ""
-    for segment in segments:
-        check_cancelled(cancel_event)
-        if (
-            getattr(segment, "avg_logprob", 0) < -1.5
-            or getattr(segment, "compression_ratio", 1) > 2.4
-            or (getattr(segment, "no_speech_prob", 0) > 0.6
-                and getattr(segment, "avg_logprob", 0) < -0.5)
-        ):
-            logging.info("Ignored an unreliable speech segment")
-            continue
-        current = segment.text.strip()
-        if len(current) >= 18 and current.casefold() == previous:
-            continue
-        text.append(segment.text)
-        previous = current.casefold()
+    with span("stt_decode"):
+        for segment in segments:
+            check_cancelled(cancel_event)
+            if (
+                getattr(segment, "avg_logprob", 0) < -1.5
+                or getattr(segment, "compression_ratio", 1) > 2.4
+                or (getattr(segment, "no_speech_prob", 0) > 0.6
+                    and getattr(segment, "avg_logprob", 0) < -0.5)
+            ):
+                logging.info("Ignored an unreliable speech segment")
+                continue
+            current = segment.text.strip()
+            if len(current) >= 18 and current.casefold() == previous:
+                continue
+            text.append(segment.text)
+            previous = current.casefold()
     check_cancelled(cancel_event)
     return "".join(text).strip()

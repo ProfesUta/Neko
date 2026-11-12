@@ -4,7 +4,7 @@ import logging
 import json
 import re
 import time
-from threading import Event, Lock
+from threading import Event, Lock, RLock
 
 from PySide6.QtCore import QThread, Signal
 
@@ -211,7 +211,8 @@ class ConversationWorker(QThread):
         self._turn_started = None
         self._first_audio_logged = False
         self._question = ""
-        self._playback_lock = Lock()
+        self._trace = None
+        self._playback_lock = RLock()
         self._playback_active = False
 
     def _set_playback_active(self, active):
@@ -221,12 +222,23 @@ class ConversationWorker(QThread):
             if active == self._playback_active:
                 return
             self._playback_active = active
-        self.playback_active_changed.emit(active)
+            # Preserve start/stop signal order when the audio callback and a
+            # microphone interruption race. GUI connections remain queued.
+            self.playback_active_changed.emit(active)
 
     def stop(self):
+        self._mark_interruption()
         self._stop_event.set()
         self._set_playback_active(False)
         self.requestInterruption()
+
+    def _mark_interruption(self):
+        trace = self._trace
+        if trace is not None:
+            trace.mark("interruption_detected")
+        incoming = current_trace()
+        if incoming is not None and incoming is not trace:
+            incoming.mark("interruption_detected")
 
     def _answer(self, text):
         from core.chat import _trim_history, chat
@@ -238,6 +250,7 @@ class ConversationWorker(QThread):
         from core.screen_access import screen_capability_question, screen_status_reply
 
         started = time.monotonic()
+        self._trace = current_trace()
         inference_priority.user_started(self)
         self._question = text
         self._turn_started = started
@@ -318,6 +331,7 @@ class ConversationWorker(QThread):
                         "discard": lambda prepared: prepared.close(),
                         "min_segment_chars": config.TTS_STREAM_MIN_CHARS,
                         "first_chunk_max_chars": config.TTS_FIRST_CHUNK_MAX_CHARS,
+                        "first_sentence_min_chars": config.TTS_FIRST_SENTENCE_MIN_CHARS,
                         "text_queue_limit": config.TTS_TEXT_QUEUE_LIMIT,
                     }
                     if config.TTS_NATIVE_STREAMING_ENABLED:
@@ -392,6 +406,9 @@ class ConversationWorker(QThread):
         return answer
 
     def _finish_spatial(self):
+        trace, self._trace = self._trace, None
+        if trace is not None:
+            trace.mark("interrupted_turn_stopped")
         inference_priority.user_finished(self)
         clear_trace()
         generation, self._spatial_generation = self._spatial_generation, None
@@ -485,6 +502,7 @@ class ConversationWorker(QThread):
         from core.league_voice import LeagueAnnouncement
         league_event = isinstance(advice, LeagueAnnouncement)
         trace = start_trace()
+        self._trace = trace
         if trace and league_event and advice.queued_ns:
             trace.mark("league_detected", advice.detected_ns or advice.queued_ns)
         def current():
@@ -511,6 +529,9 @@ class ConversationWorker(QThread):
             self.advice_error.emit(str(error))
         finally:
             self.advice_finished.emit(advice)
+            if trace is not None:
+                trace.mark("interrupted_turn_stopped")
+            self._trace = None
             clear_trace()
 
     def _report_error(self, error):
@@ -612,6 +633,7 @@ class VoiceWorker(ConversationWorker):
                 self._pending_advice = None
                 self.advice_finished.emit(advice)
             if self._active_advice_cancel is not None:
+                self._mark_interruption()
                 self._active_advice_cancel.set()
             self._advice_available.clear()
 
@@ -645,8 +667,11 @@ class VoiceWorker(ConversationWorker):
 
     def _barge_in_started(self):
         with self._turn_lock:
+            if not self.microphone_enabled():
+                return self._input_generation
             self._input_generation += 1
             if self._turn_active:
+                self._mark_interruption()
                 self._turn_cancel.set()
             generation = self._input_generation
         self._on_speech_start()

@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import Lock
-from collections import deque
+from collections import defaultdict, deque
 from time import perf_counter_ns, thread_time_ns, process_time_ns
 
 import config
@@ -15,6 +15,12 @@ class VoiceMetrics(LeagueMetrics):
         self._token_rates = deque(maxlen=2048)
         self._token_count = 0
         self._token_max = 0.0
+        self._counters = defaultdict(int)
+
+    def increment(self, name, count=1):
+        if self.enabled:
+            with self._lock:
+                self._counters[name] += count
 
     def record_tokens(self, count, nanoseconds):
         if self.enabled and count > 0 and nanoseconds > 0:
@@ -27,6 +33,8 @@ class VoiceMetrics(LeagueMetrics):
     def report(self):
         result = super().report()
         with self._lock:
+            if self._counters:
+                result["counters"] = dict(self._counters)
             values = sorted(self._token_rates)
             if values:
                 result["llm_decode_tokens_per_second"] = {
@@ -42,21 +50,54 @@ _current = ContextVar("capri_latency_trace", default=None)
 # A device DAC timestamp estimates presentation, not sound arriving at a listener.
 _PAIRS = {
     "vad_detected": (("speech_end_estimate", "speech_end_estimate_to_vad"),),
+    "capture_stopped": (("vad_detected", "vad_to_capture_stopped"),),
+    "capture_complete": (("capture_stopped", "capture_cleanup_and_assembly"),),
+    "stt_started": (("vad_detected", "vad_to_stt_start"),
+                    ("capture_complete", "capture_to_stt_start"),
+                    ("interruption_detected", "interruption_to_new_stt_start")),
     "stt_complete": (("vad_detected", "vad_to_stt_wall"),),
     "request_dispatched": (("stt_complete", "stt_to_dispatch"),),
     "llm_first_token": (("request_dispatched", "llm_ttft"),),
-    "tts_submitted": (("llm_first_token", "first_token_to_tts_submit"),),
+    "tts_queued": (("llm_first_token", "first_text_to_tts_queue"),),
+    "tts_submitted": (("llm_first_token", "first_token_to_tts_submit"),
+                      ("tts_queued", "tts_queue_wait")),
+    "tts_worker_dispatched": (("tts_submitted", "tts_setup_and_lock_wait"),),
+    "native_generate_enter": (("tts_worker_dispatched", "tts_dispatch_to_native_generate"),),
+    "native_first_callback": (("native_generate_enter", "native_generate_to_first_callback"),),
+    "native_generate_return": (("native_generate_enter", "native_generate_wall"),),
+    "native_pcm_ready": (("native_first_callback", "native_callback_to_pcm"),
+                         ("native_generate_return", "native_return_to_pcm"),
+                         ("speech_end_estimate", "speech_end_estimate_to_native_pcm")),
+    "native_wav_ready": (("native_pcm_ready", "native_pcm_to_wav"),),
+    "native_chunk_received": (("native_wav_ready", "native_wav_to_parent_receive"),),
+    "native_chunk_handled": (("native_chunk_received", "native_parent_queue_wait"),),
     "audio_ready": (("tts_submitted", "tts_submit_to_first_audio_ready"),
                     ("speech_end_estimate", "speech_end_estimate_to_audio_ready")),
+    "pcm_ready": (("audio_ready", "audio_ready_to_pcm_ready"),),
+    "playback_queued": (("pcm_ready", "pcm_to_playback_queue"),),
+    "output_opened": (("output_open_requested", "output_stream_open"),),
+    "output_started": (("output_opened", "output_stream_start"),),
+    "device_first_callback": (("playback_queued", "playback_queue_to_first_callback"),),
+    "device_submitted": (("pcm_ready", "pcm_ready_to_device_submission"),
+                         ("playback_queued", "playback_queue_to_nonsilent_callback")),
     "device_playback": (("audio_ready", "audio_ready_to_device_playback"),
+                        ("pcm_ready", "pcm_ready_to_dac_estimate"),
+                        ("device_submitted", "device_submission_to_dac_estimate"),
                         ("speech_end_estimate", "speech_end_estimate_to_device_playback"),
                         ("league_detected", "league_detected_to_device_playback")),
+    "loopback_onset": (("speech_end_estimate", "speech_end_estimate_to_loopback_onset"),
+                       ("pcm_ready", "pcm_ready_to_loopback_onset")),
+    "loopback_packet_received": (("loopback_onset", "loopback_packet_delivery"),
+                                 ("speech_end_estimate", "speech_end_estimate_to_loopback_receipt"),
+                                 ("pcm_ready", "pcm_ready_to_loopback_receipt")),
+    "output_abort_complete": (("interruption_detected", "interruption_to_output_abort"),),
+    "interrupted_turn_stopped": (("interruption_detected", "interruption_to_turn_cleanup"),),
 }
 
 
 class LatencyTrace:
-    def __init__(self, collector=metrics):
-        self.collector = collector
+    def __init__(self, collector=None):
+        self.collector = metrics if collector is None else collector
         self._lock = Lock()
         self._marks = {}
 

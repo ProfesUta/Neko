@@ -13,7 +13,7 @@ import pytest
 
 from core.cancellation import OperationCancelled
 from voice.kokoro_session import KokoroSession
-from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, create_tts, synthesize, validate_assets
+from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, CONVERSATION_LEXICON, create_tts, synthesize, validate_assets
 
 
 @pytest.fixture
@@ -270,7 +270,7 @@ def test_runtime_config_uses_pack_data_and_installed_cpu_runtime(assets, monkeyp
     create_tts(assets)
     assert received["kokoro"]["lang"] == "en-us"
     assert received["kokoro"]["data_dir"] == str(assets / "espeak-ng-data")
-    assert received["kokoro"]["lexicon"].split(",") == [str(assets / "lexicon-us-en.txt"), str(CHAMPION_LEXICON)]
+    assert received["kokoro"]["lexicon"].split(",") == [str(assets / "lexicon-us-en.txt"), str(CONVERSATION_LEXICON), str(CHAMPION_LEXICON)]
     assert received["model"]["provider"] == "cpu" and received["model"]["num_threads"] == 2
     assert received["config"]["max_num_sentences"] == 1
 

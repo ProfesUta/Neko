@@ -14,7 +14,7 @@ from core.latency import mark
 class StreamingReply:
     def __init__(self, cancellation, interaction, question, on_partial, speak=None,
                  prepare=None, discard=None, min_segment_chars=0, first_chunk_max_chars=0,
-                 prepare_stream=None, text_queue_limit=16):
+                 prepare_stream=None, text_queue_limit=16, first_sentence_min_chars=0):
         self._audio_stop = Event()
         self.cancellation = AnyEvent(cancellation, self._audio_stop)
         self.interaction = interaction
@@ -26,6 +26,7 @@ class StreamingReply:
         self.discard = discard or (lambda item: None)
         self._min_chars = max(0, int(min_segment_chars))
         self._first_max = max(0, int(first_chunk_max_chars))
+        self._first_sentence_min = max(0, int(first_sentence_min_chars))
         self._submitted = 0
         self._partial_at = 0.0
         self._last_partial = ""
@@ -62,7 +63,15 @@ class StreamingReply:
                     break  # Let the complete code block be cleaned before speech.
                 if re.search(r"\b(?:Mr|Mrs|Dr|e\.g|i\.e)\.$", prefix, re.I):
                     continue
-                if len(prefix.strip()) >= self._min_chars:
+                if self._first_sentence_min and len(prefix.strip()) < self._min_chars:
+                    if re.search(r"\b(?:Ms|Prof|Sr|Jr|St|Mt|vs|etc|approx|No|Inc|Ltd)\.$", prefix, re.I):
+                        continue
+                    if re.search(r"(?:\b[A-Za-z]\.){2,}$|\b[A-Za-z]\.$", prefix):
+                        continue
+                minimum = self._min_chars
+                if not self._submitted and self._first_sentence_min:
+                    minimum = min(minimum, self._first_sentence_min)
+                if len(prefix.strip()) >= minimum:
                     boundary = match.end()
                     break
             if boundary is None:
@@ -80,7 +89,7 @@ class StreamingReply:
 
     def _sentence(self, text):
         if self.speak and text.strip():
-            mark("tts_submitted")
+            mark("tts_queued")
             self._put(self._queue, text.strip())
             self._submitted += 1
 

@@ -9,6 +9,7 @@ data/memory.db
 data/vision.log*
 data/league-champions.json
 data/league-champions.tmp
+data/personal-pronunciations*
 test_voice.wav
 
 .env

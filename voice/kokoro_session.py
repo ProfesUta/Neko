@@ -15,9 +15,22 @@ from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
 
-from core.cancellation import check_cancelled
+from core.cancellation import OperationCancelled, check_cancelled
 from core.latency import current_trace
-from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, validate_assets, validate_request, validate_settings
+from voice.kokoro_worker import ASSET_FILES, CHAMPION_LEXICON, CONVERSATION_LEXICON, validate_assets, validate_request, validate_settings
+
+
+def _record_native_timing(trace, message):
+    if trace is None or not isinstance(timing := message.get("timing"), dict):
+        return
+    fields = {"generate_enter_ns": "native_generate_enter", "callback_ns": "native_first_callback",
+              "generate_return_ns": "native_generate_return", "pcm_ns": "native_pcm_ready", "wav_ns": "native_wav_ready"}
+    for field, name in fields.items():
+        if type(timing.get(field)) is int:
+            trace.mark(name, timing[field])
+    if type(message.get("received_ns")) is int:
+        trace.mark("native_chunk_received", message["received_ns"])
+    trace.mark("native_chunk_handled")
 
 
 class KokoroSession:
@@ -34,6 +47,7 @@ class KokoroSession:
         self._reader = None
         self._read_stop = Event()
         self._diagnostics = deque(maxlen=8)
+        self._options_warning = None
 
     def _shutdown_locked(self):
         process, self.process = self.process, None
@@ -76,6 +90,8 @@ class KokoroSession:
                     diagnostics.append(line.strip()[:500])
                     continue
                 if isinstance(value, dict):
+                    if isinstance(value.get("timing"), dict):
+                        value["received_ns"] = time.perf_counter_ns()
                     send(value)
                 if stopped.is_set():
                     break
@@ -85,10 +101,11 @@ class KokoroSession:
     def _wait(self, cancellation, deadline, on_chunk=None):
         while True:
             check_cancelled(cancellation)
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise RuntimeError("Speech generation took too long. Please try again.")
             try:
-                message = self._messages.get(timeout=0.05)
+                message = self._messages.get(timeout=min(0.05, remaining))
             except Empty:
                 continue
             check_cancelled(cancellation)
@@ -103,8 +120,24 @@ class KokoroSession:
 
     def _resources(self, asset_dir):
         directory = validate_assets(asset_dir)
-        assets = [directory / name for name in ASSET_FILES] + [directory / "espeak-ng-data", CHAMPION_LEXICON]
-        return assets, [str(directory), str(config.KOKORO_NUM_THREADS)]
+        assets = [directory / name for name in ASSET_FILES] + [directory / "espeak-ng-data", CHAMPION_LEXICON, CONVERSATION_LEXICON]
+        arguments = [str(directory), str(config.KOKORO_NUM_THREADS)]
+        if config.KOKORO_CPU_OPTIONS and str(config.KOKORO_CPU_OPTIONS).casefold() != "none":
+            options = Path(config.KOKORO_CPU_OPTIONS).expanduser().resolve()
+            if options.is_file():
+                assets.append(options)
+                arguments.append(str(options))
+                self._options_warning = None
+            elif self._options_warning != options:
+                logging.warning("Kokoro CPU options unavailable; retaining plain CPU")
+                self._options_warning = options
+        personal = config.PERSONAL_PRONUNCIATIONS_FILE
+        if personal and str(personal).casefold() != "none":
+            path = Path(personal).expanduser().resolve()
+            if path.is_file():
+                assets.append(path)
+                arguments.extend(("--personal-pronunciations", str(path)))
+        return assets, arguments
 
     def _prepare_locked(self, asset_dir, cancellation, deadline):
         assets, arguments = self._resources(asset_dir)
@@ -116,7 +149,7 @@ class KokoroSession:
         self._read_stop = Event()
         self._diagnostics = deque(maxlen=8)
         self.process = subprocess.Popen(
-            [sys.executable, "-u", str(Path(__file__).with_name(self.worker_filename)), *arguments],
+            [sys.executable, "-u", str(Path(__file__).parent / self.worker_filename), *arguments],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -151,19 +184,49 @@ class KokoroSession:
             check_cancelled(cancellation)
             if time.monotonic() >= deadline:
                 raise RuntimeError("Speech output is busy. Please try again.")
+        in_flight = False
+        generation_complete = False
+        def chunk_ready(message):
+            nonlocal generation_complete
+            generation_complete = message.get("generation_complete") is True
+            _record_native_timing(trace, message)
+            on_chunk(message)
         try:
             check_cancelled(cancellation)
             self._prepare_locked(asset_dir, cancellation, deadline)
             if request is not None:
+                check_cancelled(cancellation)
+                if trace is not None:
+                    trace.mark("tts_worker_dispatched")
+                in_flight = True
                 self.process.stdin.write(json.dumps(request, allow_nan=False) + "\n")
                 self.process.stdin.flush()
-                result = self._wait(cancellation, deadline, on_chunk)
+                result = self._wait(cancellation, deadline, chunk_ready if on_chunk is not None else None)
+                in_flight = False
                 if result.get("ok") is not True:
                     raise RuntimeError(f"{self.name} did not confirm speech generation")
                 if trace is not None:
+                    _record_native_timing(trace, result)
                     for key in ("synthesis_wall_ns", "synthesis_cpu_ns"):
                         if isinstance(result.get(key), int):
                             trace.collector.record("native_tts_" + key.removesuffix("_ns"), result[key])
+                    if type(result.get("first_callback_cpu_ns")) is int:
+                        trace.collector.record("native_tts_first_callback_cpu", result["first_callback_cpu_ns"])
+        except OperationCancelled:
+            # Audio has its own cancellation token and stops immediately. A
+            # native chunk can race the final 'ok' by a few milliseconds. Drain
+            # that acknowledgment before throwing away a fully loaded model.
+            if in_flight:
+                try:
+                    grace = max(0, min(.1, config.TTS_CANCEL_DRAIN_SECONDS)) if generation_complete else 0
+                    result = self._wait(None, min(deadline, time.monotonic() + grace), lambda message: None)
+                    if result.get("ok") is not True:
+                        self._shutdown_locked()
+                except Exception:
+                    self._shutdown_locked()
+            elif self._signature is None:
+                self._shutdown_locked()  # A cancelled model load is incomplete.
+            raise
         except BaseException:
             self._shutdown_locked()
             raise

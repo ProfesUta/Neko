@@ -100,25 +100,33 @@ VOICE_PRELOAD_ON_STARTUP = os.getenv("CAPRI_PRELOAD_VOICE", "1") != "0"
 SPEAK_TYPED_REPLIES_BY_DEFAULT = os.getenv("CAPRI_SPEECH", "1") != "0"  # Independent of MIC ON/OFF.
 WHISPER_LANGUAGE = os.getenv("CAPRI_WHISPER_LANGUAGE", "en")
 WHISPER_BEAM_SIZE = 1  # Greedy decoding for low-latency commands; set 5 for wider search.
+WHISPER_WITHOUT_TIMESTAMPS = os.getenv("CAPRI_STT_TEXT_ONLY", "1") != "0"
+WHISPER_CPU_THREADS = int(os.getenv("CAPRI_WHISPER_THREADS", "0"))  # Retain CTranslate2's automatic choice; benchmark overrides explicitly.
 VOICE_SILENCE_MS = 500
 MAX_RECORD_SECONDS = 45
 TTS_TIMEOUT_SECONDS = 90
+TTS_CANCEL_DRAIN_SECONDS = 0.05  # Keep a completed voice worker warm when Stop races its final acknowledgment.
 TTS_BACKEND = os.getenv("CAPRI_TTS_BACKEND", "kokoro").lower()
 KOKORO_VOICE_DIR = Path(os.getenv("CAPRI_VOICE_DIR", str(Path(__file__).resolve().parent / "assets" / "voices" / "capri-kokoro")))
+PERSONAL_PRONUNCIATIONS_FILE = Path(os.getenv("CAPRI_PERSONAL_PRONUNCIATIONS", str(DATA_DIR / "personal-pronunciations.json")))
 KOKORO_SPEAKER_ID = 53
 KOKORO_SPEED = 1.1
-KOKORO_NUM_THREADS = int(os.getenv("CAPRI_TTS_THREADS", "4"))
+KOKORO_NUM_THREADS = int(os.getenv("CAPRI_TTS_THREADS", "8"))
+KOKORO_CPU_OPTIONS = os.getenv("CAPRI_TTS_CPU_OPTIONS", str(Path(__file__).resolve().parent / "voice" / "kokoro_cpu.conf"))
 TTS_AUDIO_BLOCK_MS = 10
+TTS_WASAPI_ENABLED = os.getenv("CAPRI_TTS_WASAPI", "1") != "0"  # Same output endpoint, shared-mode; original driver remains fallback.
 TTS_PERSISTENT_ENABLED = True
 TTS_PREFETCH_ENABLED = True
 TTS_STREAM_MIN_CHARS = 32  # Group tiny interjections into natural spoken phrases.
+TTS_FIRST_SENTENCE_MIN_CHARS = 20  # An earlier complete first sentence; 0 restores the shared minimum.
 TTS_FIRST_CHUNK_MAX_CHARS = 80  # Prefer an early complete clause, never a partial word.
 TTS_TEXT_QUEUE_LIMIT = 16
 TTS_NATIVE_STREAMING_ENABLED = True  # Kokoro callbacks; same model, speaker and speed.
 VOICE_LATENCY_METRICS_ENABLED = os.getenv("CAPRI_LATENCY_METRICS", "0") == "1"
 VOICE_BARGE_IN_ENABLED = os.getenv("CAPRI_BARGE_IN", "0") == "1"  # Headphones: no acoustic echo canceller.
 INFERENCE_PRIORITY_ENABLED = True
-INFERENCE_BACKGROUND_QUIET_SECONDS = 2.0
+# Protect follow-up questions from cold vision loads; capture remains live.
+INFERENCE_BACKGROUND_QUIET_SECONDS = float(os.getenv("CAPRI_BACKGROUND_QUIET_SECONDS", "6"))
 TTS_STYLE_ENABLED = True
 
 

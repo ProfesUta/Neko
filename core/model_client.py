@@ -97,7 +97,7 @@ async def _request_chat(cancel_event, chunks, client, kwargs, trace):
                     final = part
                     content = part.message.content or ""
                     if content:
-                        if trace:
+                        if trace and content.strip():
                             trace.mark("llm_first_token")
                         delivered_text = True
                         text.append(content)

@@ -1,5 +1,7 @@
 # Capri voice performance report
 
+Current playback and conversational measurements are documented in [the Phase 4 voice report](PHASE4_VOICE_PERFORMANCE_REPORT.md). The preceding Kokoro work is in [the Phase 3 TTS report](PHASE3_TTS_PERFORMANCE_REPORT.md), and earlier voice-pipeline work is in [the Phase 2 report](PHASE2_PERFORMANCE_REPORT.md). The results below describe the earlier optimization session.
+
 Measured on this workstation during the implementation session: Python 3.11.6, 16 logical CPU processors, RTX 3060 with 12,288 MiB VRAM, Ollama server 0.34.3, Ollama Python SDK 0.6.3, faster-whisper 1.2.1, sherpa-onnx 2.0.1. Windows WMI did not permit reading the exact CPU model. Other applications were not controlled, so these are local observations rather than production latency guarantees.
 
 The final serial replay improved from **4.881 s to 2.692 s p50**, about **45% lower latency to first audio ready**. It used real Silero VAD, Whisper, Ollama and Kokoro with paced synthesized speech. It did not open the microphone or play the response. Both runs used the existing automatic model choice, `qwen3:8b`; this is not a 32B performance claim. A clean archive of the original committed code was used for the replay baseline, with the same neutral question, model, prompt, seed and empty memory fixture. Intended optimization settings changed: two to four TTS threads, native TTS chunks, and CPU int8 recognition for the default small Whisper preset.
