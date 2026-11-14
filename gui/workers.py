@@ -197,6 +197,7 @@ class ConversationWorker(QThread):
     interrupted = Signal()
     advice_ready = Signal(object)
     advice_finished = Signal(object)
+    advice_started = Signal(object)
     advice_error = Signal(str)
     playback_active_changed = Signal(bool)
 
@@ -515,6 +516,10 @@ class ConversationWorker(QThread):
         self._trace = trace
         if trace and league_event and advice.queued_ns:
             trace.mark("league_detected", advice.detected_ns or advice.queued_ns)
+            if advice.first_raw_ns:trace.mark("visual_first_raw",advice.first_raw_ns)
+            if advice.confirmed_ns:trace.mark("visual_confirmed",advice.confirmed_ns)
+            if advice.event_key.startswith("visual:"):trace.mark("visual_proposed",advice.queued_ns)
+            if advice.accepted_ns:trace.mark("visual_accepted",advice.accepted_ns)
         def current():
             return (advice.is_fresh() and self.context.interaction.allows_advice(advice.captured_at)
                     and not self.context.interaction.repeats_recent_response(advice.text)
@@ -523,12 +528,20 @@ class ConversationWorker(QThread):
         try:
             if not current():
                 return
-            cancellation = AnyEvent(self._cancellation, cancel_event)
+            events=[self._cancellation,cancel_event]
+            if league_event and advice.cancel_event is not None:events.append(advice.cancel_event)
+            cancellation = AnyEvent(*events)
             check_cancelled(cancellation)
-            self.advice_ready.emit(advice)
+            visual_event=league_event and advice.event_key.startswith("visual:")
+            if not visual_event:self.advice_ready.emit(advice)
             options = {"playback_guard": current}
             if league_event:
-                options["on_started"] = lambda: self.context.league.metrics.finish("notification_to_audio", advice.queued_ns)
+                def started():
+                    self.context.league.announcement_status(advice,"started")
+                    self.context.league.metrics.finish("notification_to_audio", advice.queued_ns)
+                    self.advice_started.emit(advice)
+                    if visual_event:self.advice_ready.emit(advice)
+                options["on_started"] = started
             self._speak(advice.text, cancel_event=cancellation,
                         start_deadline=advice.captured_at + (advice.lifetime if league_event else ADVICE_MAX_AGE_SECONDS),
                         urgent=not league_event, **options)
@@ -538,6 +551,7 @@ class ConversationWorker(QThread):
             logging.exception("Screen tip playback failed")
             self.advice_error.emit(str(error))
         finally:
+            if league_event:self.context.league.announcement_status(advice,"dropped")
             self.advice_finished.emit(advice)
             if trace is not None:
                 trace.mark("interrupted_turn_stopped")

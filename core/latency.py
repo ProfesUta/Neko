@@ -49,6 +49,9 @@ _current = ContextVar("capri_latency_trace", default=None)
 
 # A device DAC timestamp estimates presentation, not sound arriving at a listener.
 _PAIRS = {
+    "visual_confirmed": (("visual_first_raw","visual_raw_to_confirmation_runtime"),),
+    "visual_proposed": (("visual_confirmed","visual_confirmation_to_proposal"),),
+    "visual_accepted": (("visual_proposed","visual_proposal_to_voice_acceptance"),),
     "vad_detected": (("speech_end_estimate", "speech_end_estimate_to_vad"),),
     "capture_stopped": (("vad_detected", "vad_to_capture_stopped"),),
     "capture_complete": (("capture_stopped", "capture_cleanup_and_assembly"),),
@@ -60,6 +63,7 @@ _PAIRS = {
     "llm_first_token": (("request_dispatched", "llm_ttft"),),
     "tts_queued": (("llm_first_token", "first_text_to_tts_queue"),),
     "tts_submitted": (("llm_first_token", "first_token_to_tts_submit"),
+                      ("visual_accepted","visual_acceptance_to_tts_dispatch"),
                       ("tts_queued", "tts_queue_wait")),
     "tts_worker_dispatched": (("tts_submitted", "tts_setup_and_lock_wait"),),
     "native_generate_enter": (("tts_worker_dispatched", "tts_dispatch_to_native_generate"),),
@@ -72,6 +76,7 @@ _PAIRS = {
     "native_chunk_received": (("native_wav_ready", "native_wav_to_parent_receive"),),
     "native_chunk_handled": (("native_chunk_received", "native_parent_queue_wait"),),
     "audio_ready": (("tts_submitted", "tts_submit_to_first_audio_ready"),
+                    ("visual_proposed","visual_proposal_to_first_audio_ready"),
                     ("speech_end_estimate", "speech_end_estimate_to_audio_ready")),
     "pcm_ready": (("audio_ready", "audio_ready_to_pcm_ready"),),
     "playback_queued": (("pcm_ready", "pcm_to_playback_queue"),),
@@ -81,6 +86,7 @@ _PAIRS = {
     "device_submitted": (("pcm_ready", "pcm_ready_to_device_submission"),
                          ("playback_queued", "playback_queue_to_nonsilent_callback")),
     "device_playback": (("audio_ready", "audio_ready_to_device_playback"),
+                        ("visual_proposed","visual_proposal_to_dac_estimate"),
                         ("pcm_ready", "pcm_ready_to_dac_estimate"),
                         ("device_submitted", "device_submission_to_dac_estimate"),
                         ("speech_end_estimate", "speech_end_estimate_to_device_playback"),

@@ -52,7 +52,7 @@ class CapriWindow(QMainWindow):
         self.vision_worker = None
         self.advice_worker = None
         self.league_worker = None
-        self._league_voice_policy = LeagueVoicePolicy()
+        self._league_voice_policy = LeagueVoicePolicy(on_status=context.league.announcement_status)
         self._drag_offset = None
         self._press_position = None
         self._dragging = False
@@ -252,18 +252,19 @@ class CapriWindow(QMainWindow):
 
     def handle_league_notification(self, announcement):
         if self._closing or not self._advice_enabled or not config.LEAGUE_PROACTIVE_VOICE_ENABLED:
+            self.context.league.announcement_status(announcement,"dropped")
             return
         self._league_voice_policy.offer(announcement)
         self._deliver_league_notification()
 
     def _deliver_league_notification(self):
         if self._closing or self._stopping or not self._advice_enabled or not config.LEAGUE_PROACTIVE_VOICE_ENABLED:
-            self._league_voice_policy.pending = None
+            self._league_voice_policy.clear()
             self._league_notice_timer.stop()
             return
         pending = self._league_voice_policy.pending
         if pending is not None and not self.context.league.announcement_current(pending):
-            self._league_voice_policy.pending = None
+            self._league_voice_policy.discard_pending()
             self._league_notice_timer.stop()
             return
         available = (pending is not None and self.chat_worker is None and self.advice_worker is None
@@ -271,7 +272,7 @@ class CapriWindow(QMainWindow):
                      and (self.voice_worker is None or self.voice_worker.microphone_enabled())
                      and self.context.interaction.allows_advice(pending.captured_at)
                      and self.context.league.announcement_current(pending))
-        announcement = self._league_voice_policy.take(available)
+        announcement = self._league_voice_policy.take(available,defer_start=True)
         if announcement is None:
             ready_at = self._league_voice_policy.next_ready_at()
             if available and ready_at is not None:
@@ -281,6 +282,7 @@ class CapriWindow(QMainWindow):
         if self.voice_worker is not None:
             if self.voice_worker.offer_advice(announcement):
                 self._pending_advice = announcement
+            else:self._league_voice_policy.finish(announcement)
         else:
             self._pending_advice = announcement
             self.advice_worker = AdviceWorker(self.messages, self.context, announcement)
@@ -410,6 +412,7 @@ class CapriWindow(QMainWindow):
         worker.interrupted.connect(self.handle_interrupted)
         worker.advice_ready.connect(self.handle_advice_delivery)
         worker.advice_finished.connect(self.handle_advice_finished)
+        worker.advice_started.connect(self.handle_advice_started)
         worker.advice_error.connect(self.handle_advice_error)
         worker.finished.connect(self.conversation_worker_finished)
         self._sync_controls()
@@ -644,7 +647,7 @@ class CapriWindow(QMainWindow):
         self._sync_controls()
 
     def _cancel_advice(self):
-        self._league_voice_policy.pending = None
+        self._league_voice_policy.clear()
         self._league_notice_timer.stop()
         self._deferred_screen_advice = None
         self.advice_bubble.hide()
@@ -699,6 +702,9 @@ class CapriWindow(QMainWindow):
         self.handle_advice_candidate(advice)
 
     def handle_advice_delivery(self, advice):
+        # A queued callback from cancelled speech must not cancel newer work.
+        if advice != self._pending_advice:
+            return
         if isinstance(advice, LeagueAnnouncement):
             if (self._closing or self._stopping or not self._advice_enabled
                     or not config.LEAGUE_PROACTIVE_VOICE_ENABLED or advice != self._pending_advice
@@ -731,8 +737,13 @@ class CapriWindow(QMainWindow):
         self.advice_bubble.show_tip(advice.text)
 
     def handle_advice_finished(self, advice):
+        if isinstance(advice,LeagueAnnouncement):self._league_voice_policy.finish(advice)
         if advice == self._pending_advice:
             self._pending_advice = None
+
+    def handle_advice_started(self,advice):
+        if isinstance(advice,LeagueAnnouncement) and self._league_voice_policy.inflight==advice:
+            self._league_voice_policy.started(advice)
 
     def handle_advice_error(self, error):
         # Passive advice must never raise/activate chat over the user's game.

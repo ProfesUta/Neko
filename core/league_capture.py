@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ctypes import wintypes
 
 from core.window_grounding import WindowGrounder
+import config
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,8 @@ class RegionFrame:
     sequence: int
     source_id: str
     context_key: tuple
+    capture_started_ns: int = 0
+    ready_ns: int = 0
 
     @property
     def byte_size(self):
@@ -113,6 +116,7 @@ class GameWindowCapture:
         with self.physical_context(),mss.mss() as capture:
             def grab():
                 regions,client=self.geometry()
+                started=time.perf_counter_ns() if config.LEAGUE_LATENCY_METRICS_ENABLED else 0
                 at=time.monotonic()
                 images={}
                 for name,region in regions.items():
@@ -125,5 +129,6 @@ class GameWindowCapture:
                 if after_client!=client or after_regions!=regions or not self.allowed():
                     raise RuntimeError("Game context changed during capture; frame discarded")
                 self.sequence+=1
-                return RegionFrame(images,at,self.sequence,str(self.handle),(client,))
+                ready=time.perf_counter_ns() if started else 0
+                return RegionFrame(images,at,self.sequence,str(self.handle),(client,),started,ready)
             yield grab

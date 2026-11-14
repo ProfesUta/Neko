@@ -158,6 +158,7 @@ class LeagueClient:
         from core.league_lane import LaneTracker
         self.on_visual_state_changed = None
         self.visual_announcement_current = None
+        self.visual_announcement_status = None
         self.lane = LaneTracker(config.LEAGUE_VISION_FALLBACK_ROLE,self._visual_changed)
 
     def _visual_changed(self, state):
@@ -331,6 +332,11 @@ class LeagueClient:
                     and all(name in snapshot.allied_champions for name in announcement.allied_picks)
                     and all(name in snapshot.enemy_champions for name in announcement.enemy_picks))
         return same_match and bool(self.events())
+
+    def announcement_status(self,announcement,state):
+        if announcement.event_key.startswith("visual:") and self.visual_announcement_status:
+            self.visual_announcement_status(announcement,state)
+        if state=="accepted":self.metrics.finish("notification_proposal_to_acceptance",announcement.queued_ns)
 
     @staticmethod
     async def _get(client, endpoint):

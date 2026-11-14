@@ -62,6 +62,18 @@ def test_wrong_icons_low_confidence_and_ambiguous_identical_portraits_are_reject
     assert MinimapDetector(ambiguous,root).detect(frame(images))[0] is None
 
 
+def test_cached_color_roster_comparison_matches_opencv_for_every_champion_and_scale(calibration):
+    spec,images,root=calibration;detector=MinimapDetector(spec,root)
+    rng=np.random.default_rng(87)
+    for width,height in detector._competitors:
+        for patch in [rng.integers(0,255,(height,width,3),dtype=np.uint8),
+                      cv2.resize(images["Lee Sin"],(width,height)),np.zeros((height,width,3),np.uint8)]:
+            actual=detector.roster_scores(patch)
+            for name,reference in detector._competitors[width,height].items():
+                expected=float(cv2.matchTemplate(patch,reference,cv2.TM_CCOEFF_NORMED)[0,0])
+                assert actual[name]==pytest.approx(expected,abs=2e-5)
+
+
 @pytest.mark.parametrize("change",[{"perspective":"spectator"},{"fog_of_war":"omniscient"},{"minimap":[-.1,0,.5,.5]},
                                   {"reference_size":[1,2]},{"threshold":.1},{"target_champion":"Ahri"}])
 def test_incorrect_or_non_player_calibration_fails(calibration,change):

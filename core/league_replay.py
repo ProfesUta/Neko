@@ -113,6 +113,17 @@ class MinimapDetector:
                 self._scaled[name,scale] = (resized,cv2.cvtColor(resized,cv2.COLOR_BGR2GRAY))
                 if size not in self._competitors:
                     self._competitors[size] = {other:cv2.resize(icon,size) for other,icon in references.items()}
+        # Same multi-channel zero-mean NCC as OpenCV, with template means and
+        # norms cached. One small matrix product replaces nine repeated patch
+        # normalizations/cv2 calls for roster ambiguity checks.
+        self._competitor_names=tuple(references)
+        self._competitor_vectors={}
+        for size,icons in self._competitors.items():
+            vectors=np.stack(list(icons.values())).astype(np.float32)
+            vectors-=vectors.mean(axis=(1,2),keepdims=True)
+            vectors=vectors.reshape(len(icons),-1)
+            vectors/=np.maximum(np.linalg.norm(vectors,axis=1,keepdims=True),1e-10)
+            self._competitor_vectors[size]=vectors
         self.threshold = calibration.get("threshold", .92)
         self.margin = calibration.get("margin", .08)
         if not finite(self.threshold) or not .8 <= self.threshold <= 1 or not finite(self.margin) or not .02 <= self.margin <= .5:
@@ -162,8 +173,8 @@ class MinimapDetector:
             return None
         score, (px,py), tw,th = best
         patch = crop[py:py+th,px:px+tw]
-        other = max(float(cv2.matchTemplate(patch, icon, cv2.TM_CCOEFF_NORMED)[0,0])
-                    for name,icon in self._competitors[tw,th].items() if name != target)
+        scores=self.roster_scores(patch)
+        other=max(score for name,score in scores.items() if name!=target)
         if not math.isfinite(other) or score-other < self.margin:
             return None
         position = ((px+tw/2)/self.width, (py+th/2)/self.height)
@@ -173,6 +184,15 @@ class MinimapDetector:
                 "region_key": regions[0] if len(regions) == 1 else "unmapped",
                 "template_similarity": round(score, 5), "ambiguity_margin": round(score-other, 5),
                 "pixel_box": (px,py,tw,th)}
+
+    def roster_scores(self,patch):
+        array=patch.astype(self.np.float32)
+        array-=array.mean(axis=(0,1),keepdims=True)
+        array=array.ravel()
+        norm=float(self.np.linalg.norm(array))
+        if norm<=1e-10:return {name:0. for name in self._competitor_names}
+        scores=self._competitor_vectors[patch.shape[1],patch.shape[0]]@array/norm
+        return dict(zip(self._competitor_names,map(float,scores)))
 
     def prepare(self, crop):
         return self.cv2.GaussianBlur(crop,(0,0),self.blur_sigma) if self.blur_sigma else crop

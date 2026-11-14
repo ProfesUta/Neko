@@ -3,8 +3,10 @@ import json
 import hashlib
 import math
 import time
+from dataclasses import replace
 from collections import Counter,defaultdict
 from pathlib import Path
+import config
 
 from core.cancellation import check_cancelled
 from core.league_metrics import LeagueMetrics
@@ -263,7 +265,7 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
             cv2.setNumThreads(old_threads)
 
 
-def analyze_minimap_cache(source_report, calibration, output, cancellation=None):
+def analyze_minimap_cache(source_report, calibration, output, cancellation=None, *, include_raw=False):
     """Repeat actual CV on identical lossless recorded pixels; excludes capture/decode."""
     import cv2
     import numpy as np
@@ -315,7 +317,9 @@ def analyze_minimap_cache(source_report, calibration, output, cancellation=None)
                 metrics.finish("confirmed_detection_to_notification_proposal",started)
                 items=[item.to_dict() for item in found]
                 episodes.update(items,at,index)
-                stream.write(json.dumps({"frame":index,"timestamp":at,"observations":items},allow_nan=False)+"\n")
+                row={"frame":index,"timestamp":at,"observations":items}
+                if include_raw:row["raw_observations"]=[item.to_dict() for item in pipeline.raw_observations]
+                stream.write(json.dumps(row,allow_nan=False)+"\n")
         cpu=time.process_time()-started_cpu;wall=time.perf_counter()-started_wall
         partial.replace(output/"frames.jsonl")
         report={"schema":1,"kind":"unverified","video":source["video"],"calibration":str(calibration),
@@ -325,12 +329,135 @@ def analyze_minimap_cache(source_report, calibration, output, cancellation=None)
                 "metrics":metrics.report(),"cpu_seconds":cpu,"wall_seconds":wall,"cpu_percent_one_core":100*cpu/wall,
                 "accuracy":None,"accuracy_status":"Independent annotations required",
                 "input":"Lossless real-recording minimap cache; excludes capture/decode, no model or audio",
-                "source_report":str(source_path),"review_candidates_omitted_at_5000_limit":episodes.omitted}
+                "source_report":str(source_path),"raw_observations_included":include_raw,
+                "review_candidates_omitted_at_5000_limit":episodes.omitted}
         save_json(output/"detections.json",report)
         return report
     finally:
         cv2.setNumThreads(old_threads)
         del pixels,times
+
+
+def compare_confirmation_policies(source_report,calibration,output,labels_paths=(),cancellation=None):
+    """One actual CV pass, then identical raw evidence through each policy. No audio."""
+    from core.league_visual import TemporalConfirmation,VisualObservation
+    output=Path(output).resolve()
+    for labels in labels_paths:validate_labels(read_json(labels,20_000_000))
+    raw=analyze_minimap_cache(source_report,calibration,output/"raw",cancellation,include_raw=True)
+    result={"kind":"Actual OpenCV on lossless recorded minimaps; confirmation replays exclude capture and audio",
+            "raw_detection_metrics":raw["metrics"],"cpu_seconds":raw["cpu_seconds"],"wall_seconds":raw["wall_seconds"],"policies":{}}
+    profile=VisualCalibration.load(calibration);lane=profile.offline_lane()
+    for policy in ("strict3","two_validated","adaptive"):
+        tracker=TemporalConfirmation(profile.fps,policy=policy);metrics=LeagueMetrics(True)
+        folder=output/policy;folder.mkdir(parents=True,exist_ok=True)
+        if (folder/"detections.json").exists():raise ValueError("Use a fresh policy comparison folder")
+        episodes=CandidateEpisodes(raw["analyzed_fps"])
+        with (output/"raw"/"frames.jsonl").open(encoding="utf-8") as source,(folder/"frames.jsonl").open("w",encoding="utf-8") as stream:
+            for line in source:
+                check_cancelled(cancellation)
+                row=json.loads(line);at=row["timestamp"]
+                observations=[VisualObservation(**item) for item in row["raw_observations"]]
+                started=time.perf_counter_ns();found=tracker.update(observations,at,lane.epoch)
+                metrics.finish("confirmation_policy_replay",started)
+                row["observations"]=[item.to_dict() for item in found]
+                episodes.update(row["observations"],at,row["frame"])
+                stream.write(json.dumps(row,allow_nan=False)+"\n")
+        report={**raw,"candidates":episodes.candidates,"frames":"frames.jsonl","confirmation_policy":policy,
+                "policy_metrics":metrics.report(),"raw_source_report":str(output/"raw"/"detections.json")}
+        path=save_json(folder/"detections.json",report)
+        scores={Path(labels).stem:evaluate_labels(path,labels,allow_equivalent_calibration=True) for labels in labels_paths}
+        result["policies"][policy]={"candidate_episodes":len(episodes.candidates),"policy_metrics":metrics.report(),"scores":scores}
+        save_json(folder/"scores.json",scores)
+    save_json(output/"comparison.json",result)
+    return result
+
+
+def simulate_visual_notifications(detections,labels_paths=(),*,baseline_factory=None,tts_delay=.4,busy_intervals=()):
+    """Deterministic scheduling simulation. Never synthesizes, records or plays audio.
+
+    Controlled-region eligibility is injected only in this simulation; it must
+    never be interpreted as real lane/proximity evidence. Delay is an input,
+    not a measured TTS duration. Actual profile eligibility is reported too.
+    """
+    from core.league_visual import VisualObservation
+    from core.league_voice import LeagueVoicePolicy
+    report=read_json(detections,20_000_000);profile=VisualCalibration.load(report["calibration"])
+    labels=[validate_labels(read_json(path,20_000_000)) for path in labels_paths]
+    if not finite(tts_delay) or not 0<=tts_delay<config.LEAGUE_VISION_ALERT_LIFETIME:
+        raise ValueError("Simulated TTS delay must be shorter than the announcement lifetime")
+    result={"measurement":"Simulated start/guard execution, NOT TTS synthesis, DAC output or audible speech",
+            "simulated_tts_delay_s":tts_delay,"scenarios":{}}
+    for legacy in ([True,False] if baseline_factory else [False]):
+        for controlled in (False,True):
+            clock=[0.];d=VisualAlertDispatcher(profile);d.muted=False
+            policy=LeagueVoicePolicy(clock=lambda:clock[0],on_status=lambda a,s:d.lifecycle(a,s,clock[0]))
+            if legacy:d,policy=baseline_factory(profile,clock)
+            active=None;started_alerts=[];counts=Counter();stage_delays=LeagueMetrics(True)
+            with local_file(Path(detections).parent/report["frames"]).open(encoding="utf-8") as source:
+                for line in source:
+                    row=json.loads(line);at=row["timestamp"];clock[0]=at
+                    observations=[VisualObservation(**o) for o in row["observations"]]
+                    if controlled:
+                        observations=[replace(o,in_assigned_lane=True,location="controlled test region") for o in observations]
+                    proposed=d.update(observations,1,now=at);counts["proposed"]+=len(proposed)
+                    for ann in proposed:
+                        if policy.offer(ann):counts["accepted"]+=1
+                    busy=any(a<=at<=b for a,b in busy_intervals)
+                    if active:
+                        ann,due=active
+                        if busy or not ann.is_fresh(at) or not d.is_current(ann,at):
+                            counts["dropped_before_start"]+=1
+                            if not legacy:policy.finish(ann)
+                            active=None
+                        elif at+.00051>=due:
+                            original=d.offered[ann.event_key]
+                            current=d.current[original.champion,original.source]
+                            started_alerts.append({"timestamp":at,"champion":ann.champion,"source":current.source,
+                                                   "position":list(current.position),"proposed_at":ann.captured_at})
+                            counts["started"]+=1
+                            stage_delays.record("simulated_proposal_to_start",round((at-ann.captured_at)*1e9))
+                            if not legacy:policy.started(ann);policy.finish(ann)
+                            active=None
+                    item=policy.take(not busy and active is None,**({} if legacy else {"defer_start":True}))
+                    if item:active=(item,at+tts_delay)
+            scopes={}
+            for path,truth in zip(labels_paths,labels):
+                if not truth["annotation_complete"]:continue
+                coverage=truth["coverage"];spans=coverage.get("intervals",[[coverage["start_s"],coverage["end_s"]]])
+                nframes=0
+                with local_file(Path(detections).parent/report["frames"]).open(encoding="utf-8") as source:
+                    for line in source:
+                        at=json.loads(line)["timestamp"]
+                        nframes+=any(a-.00051<=at<=b+.00051 for a,b in spans)
+                scoped=Counter();seen=set();onsets=LeagueMetrics(True)
+                for alert in started_alerts:
+                    at=alert["timestamp"]
+                    if not any(a-.00051<=at<=b+.00051 for a,b in spans):continue
+                    if truth.get("complete_champions") and alert["champion"] not in truth["complete_champions"]:continue
+                    if alert["source"] not in truth["complete_for"]:continue
+                    x,y=alert["position"]
+                    if any(r["source"]==alert["source"] and r["start_s"]-.00051<=at<=r["end_s"]+.00051
+                           and r["bounds"][0]<=x<=r["bounds"][0]+r["bounds"][2]
+                           and r["bounds"][1]<=y<=r["bounds"][1]+r["bounds"][3] for r in truth.get("ignored_regions",[])):
+                        scoped["excluded"]+=1;continue
+                    match=next(((i,l) for i,l in enumerate(truth["labels"]) if l["champion"]==alert["champion"]
+                                and l["source"]==alert["source"] and l["start_s"]-.00051<=at<=l["end_s"]+.00051
+                                and math.dist(l["position"],alert["position"])<=.1),None)
+                    if match:
+                        i,label=match;key=(label["champion"],label["source"],label.get("episode_id",str(i)))
+                        scoped["true_starts"]+=1;scoped["duplicates"]+=key in seen;seen.add(key)
+                        if label.get("onset_known",True):
+                            onsets.record("appearance_to_simulated_start",round((at-label.get("onset_s",label["start_s"]))*1e9))
+                    else:scoped["false_starts"]+=1
+                exposure=nframes/report["analyzed_fps"]
+                scopes[Path(path).stem]={"true_starts":scoped["true_starts"],"false_starts":scoped["false_starts"],
+                    "duplicates":scoped["duplicates"],"excluded":scoped["excluded"],"reviewed_seconds":exposure,
+                    "simulated_false_starts_per_minute":scoped["false_starts"]*60/exposure if exposure else None,
+                    "latency":onsets.report(),"annotation_provenance":truth.get("reviewer")}
+            name=("baseline" if legacy else "optimized")+("_controlled_region" if controlled else "_actual_eligibility")
+            result["scenarios"][name]={"counts":dict(counts),"scoped_scores":scopes,"stage_delays":stage_delays.report(),
+                                       "started_alerts":started_alerts,"busy_intervals":list(busy_intervals)}
+    return result
 
 
 def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibration=False):
@@ -363,7 +490,7 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
         result.update(accuracy=None,status="Confirm/reject reviews alone do not measure recall. Label missed positives and declare exhaustive coverage.")
         return result
     tp=fp=fn=identity_total=identity_correct=proximity_total=proximity_correct=frames=0
-    first_detections={};false_episodes={};false_count=0;latency=LeagueMetrics(True)
+    first_detections={};first_raw={};false_episodes={};false_count=0;latency=LeagueMetrics(True)
     per_champion=defaultdict(Counter)
     start,end=labels["coverage"]["start_s"],labels["coverage"]["end_s"]
     intervals=labels["coverage"].get("intervals",[[start,end]])
@@ -395,6 +522,13 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
                            and r["bounds"][1]<=py<=r["bounds"][1]+r["bounds"][3] for r in ignored)
             expected=[(i,l) for i,l in enumerate(labels["labels"]) if l["source"] in labels["complete_for"]
                       and l["start_s"]-.00051<=at<=l["end_s"]+.00051 and not excluded(l)]
+            for i,label in expected:
+                key=episode(i,label)
+                if key in first_raw:continue
+                if any(o["champion"]==label["champion"] and o["source"]==label["source"]
+                       and not excluded(o) and math.dist(o["position"],label["position"])<=.1 for o in frame.get("raw_observations",[])):
+                    first_raw[key]=at
+                    if key in onsets:latency.record("appearance_to_first_raw_detection",round((at-onsets[key])*1e9))
             present=[o for o in frame["observations"] if o["source"] in labels["complete_for"]
                      and (not declared or o["champion"] in declared)]
             observed=[o for o in present if not excluded(o)]
@@ -414,6 +548,7 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
                         first_detections[key]=at
                         if key in onsets:
                             latency.record("appearance_to_temporally_confirmed_sighting",round((at-onsets[key])*1e9))
+                            if key in first_raw:latency.record("first_raw_to_confirmation",round((at-first_raw[key])*1e9))
                 else:
                     fp+=1;fn+=1;wrong.append(item)
                     per_champion[item["champion"]]["fp"]+=1;per_champion[label["champion"]]["fn"]+=1

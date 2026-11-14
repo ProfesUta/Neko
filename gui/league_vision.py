@@ -37,13 +37,17 @@ class LeagueVisualWorker(QThread):
 
     def invalidate(self,message="capture paused"):
         with self.lock:
-            if self.dispatcher:self.dispatcher.current.clear()
+            if self.dispatcher:self.dispatcher.invalidate()
             self.stats["status"]=message[:200]
 
     def announcement_current(self,announcement):
         if self.stop_event.is_set() or not live_allowed(self.league):return False
         with self.lock:
             return bool(self.dispatcher and self.dispatcher.is_current(announcement))
+
+    def announcement_status(self,announcement,state):
+        with self.lock:
+            if self.dispatcher:self.dispatcher.lifecycle(announcement,state)
 
     def snapshot(self):
         with self.lock:
@@ -102,8 +106,12 @@ class LeagueVisualWorker(QThread):
                 skipped=max(0,frame.sequence-last_sequence-1) if last_sequence else 0
                 last_sequence=frame.sequence
                 started=time.perf_counter_ns()
+                if self.metrics.enabled and frame.ready_ns:
+                    self.metrics.record("capture_to_frame_ready",frame.ready_ns-frame.capture_started_ns)
+                    self.metrics.record("frame_ready_to_detection_start",started-frame.ready_ns)
                 observations=pipeline.process(frame.regions,state,frame.captured_at)
                 self.metrics.finish("visual_processing",started)
+                if frame.capture_started_ns:self.metrics.finish("capture_frame_to_detection_complete",frame.capture_started_ns)
                 if time.monotonic()-frame.captured_at>config.LEAGUE_VISION_MAX_FRAME_AGE:
                     self.invalidate("stale processed frame discarded")
                     with self.lock:self.stats["stale_frames"]+=1
@@ -141,6 +149,7 @@ class LeagueVisualService(QObject):
         self.dialog=None
         self.restart=False
         self.league.visual_announcement_current=self.announcement_current
+        self.league.visual_announcement_status=self.announcement_status
         self.calibration_requested.connect(self._open_calibration,Qt.ConnectionType.QueuedConnection)
 
     def status(self):
@@ -190,6 +199,9 @@ class LeagueVisualService(QObject):
     def announcement_current(self,announcement):
         return bool(self.worker and self.worker.announcement_current(announcement))
 
+    def announcement_status(self,announcement,state):
+        if self.worker:self.worker.announcement_status(announcement,state)
+
     def open_calibration(self,video=""):
         self.calibration_requested.emit(video)
         return {"status":"queued","message":"Opening the local recorded-frame calibration and label editor."}
@@ -222,5 +234,6 @@ class LeagueVisualService(QObject):
     def close(self):
         self.closing=True
         self.league.visual_announcement_current=None
+        self.league.visual_announcement_status=None
         if self.worker:self.worker.stop()
         if self.dialog:self.dialog.close()

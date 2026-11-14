@@ -15,6 +15,7 @@
   "proximity_radius": 0.12,
   "threshold": 0.92,
   "minimap_blur_sigma": 0.0,
+  "confirmation_policy": "strict3",
   "margin": 0.08,
   "alert_cooldown": 8,
   "alerts_muted": true,

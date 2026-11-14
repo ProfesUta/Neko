@@ -116,6 +116,41 @@ def test_own_position_not_invented_and_proximity_uses_only_verified_player_icon(
     assert confirm_frames(LeagueVisualPipeline(profile),profile,frame())[-1][0].near_player is None
 
 
+def test_attached_yuumi_host_face_and_ambiguous_allies_do_not_establish_player_position(visual_fixture):
+    spec,images,frame,root=visual_fixture
+    spec=copy.deepcopy(spec)
+    spec["roster"].append({"champion":"Yuumi","side":"ally","position":"UTILITY"})
+    spec["templates"]["Yuumi"]="Ahri.png"  # An attached marker/reference showing a host's face.
+    profile=VisualCalibration({**spec,"player_champion":"Yuumi"},root)
+    pipeline=LeagueVisualPipeline(profile);match=pipeline.minimap.match;asked=[]
+    def tracked(crop,name,gray=None):asked.append(name);return match(crop,name,gray)
+    pipeline.minimap.match=tracked
+    found=confirm_frames(pipeline,profile,frame())[-1][0]
+    assert "Yuumi" not in asked and found.distance is None and found.near_player is None
+    assert found.player_position_source=="unverified"
+    # The same portrait belonging to two known allies is ambiguous even for a
+    # non-attached player; the full roster must win the identity comparison.
+    profile=VisualCalibration({**spec,"player_champion":"Ahri"},root)
+    found=confirm_frames(LeagueVisualPipeline(profile),profile,frame())[-1][0]
+    assert found.near_player is None and found.distance is None
+
+
+@pytest.mark.parametrize("position",[(float("nan"),.2),(-.1,.2),(.2,1.1)])
+def test_invalid_player_coordinates_never_produce_proximity_claims(visual_fixture,position):
+    spec,_,frame,root=visual_fixture;profile=VisualCalibration(spec,root);pipeline=LeagueVisualPipeline(profile)
+    match=pipeline.minimap.match
+    pipeline.minimap.match=lambda crop,name,gray=None:({"minimap_position":position} if name=="Ahri" else match(crop,name,gray))
+    found=confirm_frames(pipeline,profile,frame())[-1][0]
+    assert found.near_player is None and found.distance is None
+
+
+def test_two_claimed_identities_in_one_overlapping_icon_are_rejected(visual_fixture):
+    spec,_,frame,root=visual_fixture;profile=VisualCalibration(spec,root);pipeline=LeagueVisualPipeline(profile)
+    pipeline.minimap.match=lambda crop,name,gray=None:None if name=="Ahri" else {
+        "minimap_position":(.2,.2),"pixel_box":(20,20,16,16),"template_similarity":.99,"ambiguity_margin":.4}
+    assert not any(confirm_frames(pipeline,profile,frame()))
+
+
 def test_different_resolutions_scaling_low_confidence_and_obscured_icons(visual_fixture):
     spec,images,frame,root=visual_fixture
     profile=VisualCalibration(spec,root)
@@ -386,6 +421,35 @@ def test_explicit_recorded_pixel_cache_reproduces_detections_and_validates_geome
     changed=read_saved(calibration);changed["fps"]=5;save_json(different,changed)
     with pytest.raises(ValueError,match="cadence"):
         analyze_minimap_cache(output/"detections.json",different,output/"wrong-rate")
+
+
+def test_real_policy_harness_reuses_identical_raw_evidence_and_simulation_never_calls_audio(visual_video,monkeypatch):
+    from core.league_visual_evaluation import compare_confirmation_policies,simulate_visual_notifications
+    video,calibration,output=visual_video
+    analyze_recording(video,calibration,output,cache_minimap=True)
+    def forbidden(*args,**kwargs):raise AssertionError("No speech in offline policy evaluation")
+    monkeypatch.setattr("voice.tts.speak",forbidden)
+    monkeypatch.setattr("core.model_client.request_chat",forbidden)
+    compared=compare_confirmation_policies(output/"detections.json",calibration,output/"policies")
+    assert set(compared["policies"])=={"strict3","two_validated","adaptive"}
+    paths=[output/"policies"/p/"frames.jsonl" for p in compared["policies"]]
+    rows=[[json.loads(line) for line in path.read_text().splitlines()] for path in paths]
+    assert all([r["raw_observations"] for r in rows[0]]==[r["raw_observations"] for r in other] for other in rows[1:])
+    simulated=simulate_visual_notifications(output/"policies"/"strict3"/"detections.json")
+    assert simulated["scenarios"]["optimized_controlled_region"]["counts"]["started"]==1
+
+
+def test_reference_ablations_cannot_expand_a_champion_limited_review_scope(visual_video):
+    from benchmark_league import reference_variant_benchmark
+    video,calibration,output=visual_video
+    analyze_recording(video,calibration,output,cache_minimap=True)
+    labels=new_labels(video,calibration);labels.update(kind="synthetic",annotation_complete=True,complete_champions=["Lee Sin"])
+    labels["coverage"]["end_s"]=2.9
+    labels["labels"]=[{"champion":"Lee Sin","source":"minimap","start_s":.5,"end_s":2.,"position":[28/128,28/128]}]
+    truth=save_json(output/"lee-only.json",labels)
+    manifest=save_json(output/"variants.json",{"Garen":{"working":"Garen.png"}})
+    result=reference_variant_benchmark(output/"detections.json",calibration,output/"variant-test",manifest,[truth])
+    assert result["variants"]["Garen:working"]["scores"]=={}
 
 
 def test_cache_cancellation_and_malformed_timestamps_never_produce_success(visual_video):

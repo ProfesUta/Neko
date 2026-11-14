@@ -1,5 +1,7 @@
 # Phase 6: recorded-footage evaluation — 14 November 2026
 
+The subsequent [Phase 6.1 report](PHASE6_1_DETECTION_OPTIMIZATION_REPORT.md) documents notification lifecycle fixes, confirmation-policy comparisons and paired processing measurements. The original baseline and evidence below are preserved.
+
 The supplied recording was decoded again with all ten references, then rerun after a small OpenCV matching change. No YOLO, Ollama, capture worker, speech engine, sprite, docking or teleport change was needed. Competitive capture and alerts remain disabled: both `LEAGUE_VISION_ENABLED` and `LEAGUE_VISION_RIOT_APPROVED` evaluated to `False`. The local profile remains muted.
 
 **Evidence and annotation limits.** This is real recorded gameplay, but the accuracy labels are an **assistant visual audit**, not independently verified human ground truth. The existing human-label file contained no sightings. Unlabelled, enlarged nearest-neighbor minimap sheets were inspected before consulting the detector predictions. No model predictions were copied into ground truth. The JSON records the reviewer and limitations. Results apply only to the explicit windows below, not the whole recording, another HUD configuration, another match, or live play. Human confirmation remains necessary.
