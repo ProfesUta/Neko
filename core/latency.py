@@ -107,6 +107,11 @@ class LatencyTrace:
         self._lock = Lock()
         self._marks = {}
 
+    def snapshot(self):
+        """Copy numeric stage marks without exposing mutable cross-thread state."""
+        with self._lock:
+            return dict(self._marks)
+
     def mark(self, name, at=None):
         if not self.collector.enabled:
             return

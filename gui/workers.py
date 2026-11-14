@@ -509,10 +509,14 @@ class ConversationWorker(QThread):
             if not stream_segment:
                 self._set_playback_active(False)
 
-    def _play_advice(self, advice, cancel_event):
+    def _play_advice(self, advice, cancel_event, trace=None):
         from core.league_voice import LeagueAnnouncement
         league_event = isinstance(advice, LeagueAnnouncement)
-        trace = start_trace()
+        if trace is None:
+            trace = start_trace()
+        else:
+            from core.latency import use_trace
+            use_trace(trace)
         self._trace = trace
         if trace and league_event and advice.queued_ns:
             trace.mark("league_detected", advice.detected_ns or advice.queued_ns)
@@ -600,13 +604,14 @@ class ChatWorker(ConversationWorker):
 
 
 class AdviceWorker(ConversationWorker):
-    def __init__(self, messages, context, advice):
+    def __init__(self, messages, context, advice, trace=None):
         super().__init__(messages, context)
         self.advice = advice
+        self.advice_trace = trace
 
     def run(self):
         try:
-            self._play_advice(self.advice, self._stop_event)
+            self._play_advice(self.advice, self._stop_event, self.advice_trace)
         except OperationCancelled:
             pass
         finally:
