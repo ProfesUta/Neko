@@ -38,7 +38,10 @@ class FrameHistory:
             self._clear()
 
     def put(self, frame):
-        size = len(frame.jpeg) + sum(map(len, frame.images))
+        # Local CV regions stay as raw pixels; the existing JPEG path is unchanged.
+        size = getattr(frame,"byte_size",None)
+        if size is None:
+            size = len(frame.jpeg) + sum(map(len, frame.images))
         key = (frame.source_id, frame.context_key)
         with self._lock:
             if size > self.max_bytes:

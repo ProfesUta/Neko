@@ -107,12 +107,14 @@ def own_player_snapshot(active, players, game):
               **_numbers(active, ("currentGold", "level")),
               "stats": _numbers(active["championStats"], ("currentHealth", "maxHealth", "resourceValue",
                                 "resourceMax", "attackDamage", "abilityPower", "armor", "magicResist")),
-              "game": _numbers(game, ("gameTime",)),
+              "game": _numbers(game, ("gameTime", "mapNumber")),
               "scores": _numbers(own.get("scores", {}), ("kills", "deaths", "assists", "creepScore", "wardScore"))}
     if isinstance(own.get("championName"), str):
         result["champion"] = own["championName"][:80]
     result["items"] = [item["displayName"][:100] for item in (own.get("items") or [])
                        if isinstance(item, dict) and isinstance(item.get("displayName"), str)][:8]
+    result["item_ids"] = [item["itemID"] for item in (own.get("items") or [])
+                          if isinstance(item,dict) and type(item.get("itemID")) is int and 0 < item["itemID"] < 100000][:8]
     if type(own.get("isDead")) is bool:
         result["isDead"] = own["isDead"]
     return result
@@ -147,6 +149,28 @@ class LeagueClient:
         self.champ_select = ChampionSelectClient(self.metrics, self._champion_changed)
         self._stats_lock = None
         self._stats_completed_at = float("-inf")
+        from core.league_knowledge import LeagueKnowledge
+        from core.league_journal import MatchJournal
+        self.knowledge = LeagueKnowledge(self.champ_select.names)
+        self.journal = MatchJournal()
+        self.journal.reset(self.tracker.epoch)
+        self._roster = ()
+        from core.league_lane import LaneTracker
+        self.on_visual_state_changed = None
+        self.visual_announcement_current = None
+        self.lane = LaneTracker(config.LEAGUE_VISION_FALLBACK_ROLE,self._visual_changed)
+
+    def _visual_changed(self, state):
+        if self.on_visual_state_changed:
+            self.on_visual_state_changed(state)
+
+    def visual_context(self):
+        """No I/O; capture requires a fresh match, public roster and known mode."""
+        state = self.lane.snapshot()
+        with self._lock:
+            fresh=(self._snapshot is not None and self._session.active and state.epoch==self.tracker.epoch
+                   and time.monotonic()-self._captured_at<=max(2,config.LEAGUE_CACHE_SECONDS*3))
+        return state if fresh else None
 
     @property
     def champ_select_enabled(self):
@@ -161,6 +185,7 @@ class LeagueClient:
         return config.LEAGUE_LIVE_DATA_ENABLED
 
     def _champion_changed(self, old, new):
+        self.lane.phase(new.phase,new.role,new.selection_known)
         if new.phase not in ("ChampSelect", "Unavailable"):
             self._acknowledged_picks.clear()
             self._reacted_hovers.clear()
@@ -169,6 +194,8 @@ class LeagueClient:
         if new.phase in ("GameStart", "InProgress") and old.phase not in ("GameStart", "InProgress", "Reconnect", "Unavailable"):
             with self._lock:
                 self.tracker.reset()
+                self.journal.reset(self.tracker.epoch)
+                self._roster = ()
                 self._events = ()
                 self._events_available = False
                 self._snapshot = None
@@ -217,6 +244,9 @@ class LeagueClient:
                 self._session_live_epoch = self.tracker.epoch
         if changed and self.on_session_active_changed:
             self.on_session_active_changed(active)
+        if changed and not active:
+            self.journal.finish(self.tracker.epoch, self._events)
+            self.lane.reset(self.tracker.epoch)
         if ready and not changed and self.on_live_game_ready:
             self.on_live_game_ready()
 
@@ -265,6 +295,12 @@ class LeagueClient:
                 return None
             return {**copy.deepcopy(self._snapshot), "age_seconds": round(now - self._captured_at, 2)}
 
+    def roster(self):
+        with self._lock:
+            if self._snapshot is None or time.monotonic() - self._captured_at > max(2, config.LEAGUE_CACHE_SECONDS * 3):
+                return ()
+            return tuple(dict(item) for item in self._roster)
+
     def events(self):
         with self._lock:
             age = time.monotonic() - self._events_at
@@ -279,6 +315,8 @@ class LeagueClient:
     def announcement_current(self, announcement):
         with self._lock:
             same_match = announcement.epoch == self.tracker.epoch
+        if announcement.event_key.startswith("visual:"):
+            return bool(same_match and self.visual_announcement_current and self.visual_announcement_current(announcement))
         if announcement.event_key == "champ-select":
             return self.champ_select.snapshot().phase == "ChampSelect"
         if announcement.event_key in ("pick-hover", "pick-locked"):
@@ -320,6 +358,8 @@ class LeagueClient:
                     epoch = self.tracker.epoch
                     self.tracker.set_game_time(game.get("gameTime"))
                     if self.tracker.epoch != epoch:
+                        self.journal.reset(self.tracker.epoch)
+                        self._roster = ()
                         self._events = ()
                         self._events_available = False
                         self._actors = {}
@@ -358,12 +398,23 @@ class LeagueClient:
                 else:
                     relabelled = False
                 with self._lock:
+                    visual_update = None
                     if not self.tracker.ended and self.tracker.epoch == epoch:
                         self._snapshot, self._captured_at = snapshot, time.monotonic()
+                        # Public champion/team/assigned-position metadata only.
+                        self._roster = tuple({"champion": safe_text(player.get("championName")),
+                                              "side": "ally" if player.get("team") == team else "enemy",
+                                              "position": safe_text(player.get("position"), 20).upper()}
+                                             for player in players[:20] if isinstance(player, dict) and team and player.get("team"))
+                        visual_update=(epoch,game.get("gameMode"),game.get("mapNumber"),
+                                       safe_text(own.get("position"),20).upper(),team,safe_text(own.get("championName")))
+                        self.journal.update(epoch, snapshot)
                         self._actors = actors
                         self._own_aliases = aliases
                         if relabelled:
                             self._events = tuple(self.tracker.history)
+                if visual_update:
+                    self.lane.update(*visual_update)
             except (httpx.HTTPError, ValueError, TypeError, AttributeError):
                 with self._lock:
                     self._snapshot = None
@@ -383,13 +434,17 @@ class LeagueClient:
             detected = self.metrics.start() or (time.perf_counter_ns() if config.VOICE_LATENCY_METRICS_ENABLED else 0)
             with self._lock:
                 if self.tracker.epoch != epoch:
+                    self.journal.reset(self.tracker.epoch)
+                    self._roster = ()
                     self._snapshot = None
                     self._actors = {}
                     self._own_aliases = frozenset()
                 if not self._events or fresh or self.tracker.epoch != epoch:
                     self._events = tuple(self.tracker.history)
                 self._events_available, self._events_at = True, now
+                self.journal.observe_events(self.tracker.epoch,self._events,fresh)
                 if self.tracker.ended:
+                    self.journal.finish(self.tracker.epoch, self._events)
                     self._snapshot = None
             self._observe_session(live=not self.tracker.ended, ended=self.tracker.ended)
             self.metrics.finish("event_http_to_identified", started)
@@ -458,6 +513,9 @@ class LeagueClient:
                 self._actors = {}
                 self._own_aliases = frozenset()
                 self.tracker.reset()
+                self.journal.reset(self.tracker.epoch)
+                self._roster = ()
+            self.knowledge.close()
             self.champ_select.update(phase="Unavailable", clear=True)
             self._observe_session(shutdown=True)
 
@@ -469,7 +527,65 @@ class LeagueClient:
         finally:
             self.metrics.finish("question_to_direct_answer", started)
 
+    def companion_answer(self, text, cancel_event=None):
+        """New cache/reference routes; no screen work or automatic model calls."""
+        with self._lock:
+            before = self.tracker.epoch
+        check_cancelled(cancel_event)
+        game = self.read(cancel_event) if self.stats_enabled else None
+        with self._lock:
+            epoch = self.tracker.epoch
+        if epoch != before:
+            game = None
+        self.journal.reset(epoch)
+        if self.journal.coaching_request(text) and self.session_active:
+            return "Let's review the completed match after this active session. I won't run post-game analysis during play."
+        if self.postgame_context(text):
+            return None  # Explicit reasoning request uses the existing streamed conversation route.
+        note = self.journal.sighting_request(text, game, epoch, self.champ_select.names.names.values())
+        if note:
+            return note
+        postgame = self.journal.postgame_answer(text)
+        if postgame:
+            return postgame
+        replay = self.journal.replay_answer(text)
+        if replay:
+            return replay
+        if re.search(r"\bwhere.{0,30}(enemy|jungler)|predict.{0,20}(route|path)", text, re.I):
+            return "I can't verify current enemy positions or predict jungle routes. A reported or recorded last sighting is only a past observation."
+        if re.fullmatch(r"\s*(?:what (?:items? (?:have i (?:bought|got)|do i have))|what(?:'s| is) my (?:current )?inventory)[?.! ]*", text, re.I):
+            return ("Your API-reported current inventory: " + (", ".join(game.get("items", [])) or "no named items") +
+                    ". This doesn't include sold items.") if game else "I don't have a fresh inventory snapshot, so I can't verify your items."
+        if re.search(r"\bwhat happened in (?:the )?last team ?fight\b", text, re.I):
+            events = self.events()
+            kills = [event for event in events if event.name == "ChampionKill"]
+            return ("I can't identify teamfight boundaries from this API. Last recorded kills: " +
+                    " ".join(f"{int(event.game_time)//60}:{int(event.game_time)%60:02d}, {event.describe()}" for event in kills[-5:])) if kills else "I don't have enough recorded kills to describe a teamfight, and I won't invent one."
+        if re.search(r"\bwhich objectives (?:were|have been) recorded\b", text, re.I):
+            events = [event for event in self.events() if event.name in ("DragonKill", "BaronKill", "HeraldKill", "HordeKill", "TurretKilled", "InhibKilled")]
+            return "Recorded objectives: " + " ".join(f"{int(event.game_time)//60}:{int(event.game_time)%60:02d}, {event.describe()}" for event in events[-5:]) if events else "No objectives are available in my current bounded event history."
+        if re.search(r"\bcurrent kda\b", text, re.I):
+            return direct_league_answer("what is my kda", game) or "I don't have a fresh KDA snapshot."
+        own_reference = re.search(r"\bmy (?:league )?(?:champion|ability|abilities|[qwer])\b",text,re.I)
+        hint = game.get("champion") if game and own_reference else None
+        if own_reference and not hint and not self.knowledge.champions_in(text):
+            return None  # Preserve verified API -> screen fallback for an unresolved personal reference.
+        if re.search(r"enemy jungler", text, re.I):
+            junglers = [entry["champion"] for entry in self.roster() if entry["side"] == "enemy" and entry["position"] == "JUNGLE"]
+            if len(junglers) != 1:
+                return "The public API hasn't identified a unique enemy jungle role. Tell me the champion's name; I won't infer it from their kit."
+            hint = junglers[0]
+        return self.knowledge.answer(text, hint, cancel_event,
+                                     item_ids=game.get("item_ids",()) if game else (),
+                                     map_id=game.get("game",{}).get("mapNumber") if game else None)
+
+    def postgame_context(self, text):
+        return None if self.session_active else self.journal.reasoning_context(text)
+
     def context_for(self, text):
+        review = self.postgame_context(text)
+        if review:
+            return {"post_game_review":review}
         if not league_question(text, champion_names=self.champ_select.names.names.values()):
             return None
         result = {"own_player": self.read() if self.stats_enabled else None}
@@ -482,6 +598,9 @@ class LeagueClient:
             result["recent_events"] = [{"game_time": event.game_time, "fact": event.describe()}
                                        for event in events[-3:]]
             result["match_ended"] = any(event.name == "GameEnd" for event in events)
+        reference = self.knowledge.context_for(text)
+        if reference:
+            result["static_reference"] = reference
         return result if any(result.values()) else None
 
 

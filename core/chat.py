@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+import re
 from pathlib import Path
 from typing import get_type_hints
 
@@ -18,6 +19,8 @@ from core.response_grounding import is_proactive
 from memory.database import get_memories, remember_fact
 from tools.registry import AVAILABLE_FUNCTIONS, TOOLS
 from tools.spatial import spatial_session
+from tools.league import league_session
+from tools.league import LEAGUE_TOOLS
 
 
 MEMORY_TRIGGERS = (
@@ -137,7 +140,9 @@ def _execute_tool(name, arguments, context, cancel_event=None):
         for key, value in arguments.items():
             if hints.get(key) is str and not isinstance(value, str):
                 raise ValueError(f"'{key}' must be text")
-        with spatial_session(getattr(context, "spatial", None), cancel_event):
+        with spatial_session(getattr(context, "spatial", None), cancel_event), league_session(
+            getattr(context,"league",None),getattr(context,"league_replay",None),cancel_event,getattr(context,"league_visual",None)
+        ):
             result = str(function(**arguments))
         update_context(context, name, arguments, result)
         if len(result) > MAX_TOOL_RESULT_CHARS:
@@ -159,6 +164,8 @@ def chat(
     check_cancelled(cancel_event)
     _trim_history(messages)
     tool_count = 0
+    recent = " ".join(item.get("content","") for item in messages[-8:] if item.get("role")=="user")
+    turn_tools = TOOLS if re.search(r"\b(league|lol|champion|replay|recording|post.?game)\b|\b(?:load|review).{0,30}report",recent,re.I) else [tool for tool in TOOLS if tool not in LEAGUE_TOOLS]
     try:
         _detect_memory(messages, cancel_event)
         for round_index in range(MAX_TOOL_ROUNDS + 1):
@@ -178,7 +185,7 @@ def chat(
                 })
             response = request_chat(
                 cancel_event=cancel_event, model=MODEL, messages=request,
-                tools=[] if limit_reached else TOOLS,
+                tools=[] if limit_reached else turn_tools,
             )
             check_cancelled(cancel_event)
             message = response.message.model_dump(exclude_none=True)

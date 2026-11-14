@@ -1,0 +1,35 @@
+{
+  "_instructions": "ILLUSTRATIVE ONLY. Replace the measured frame/minimap geometry, complete actual roster and every cropped visible-icon template. Confirm player fog of war. Regions are optional; no lane labels are guessed.",
+  "reference_size": [1920, 1080],
+  "minimap": [0.84, 0.73, 0.15, 0.26],
+  "perspective": "player",
+  "fog_of_war": "player",
+  "target_champion": "Lee Sin",
+  "threshold": 0.92,
+  "margin": 0.08,
+  "roster": [
+    {"champion": "Darius", "side": "enemy", "position": "TOP"},
+    {"champion": "Lee Sin", "side": "enemy", "position": "JUNGLE"},
+    {"champion": "Ahri", "side": "enemy", "position": "MIDDLE"},
+    {"champion": "Jinx", "side": "enemy", "position": "BOTTOM"},
+    {"champion": "Nautilus", "side": "enemy", "position": "UTILITY"},
+    {"champion": "Garen", "side": "ally", "position": "TOP"},
+    {"champion": "Amumu", "side": "ally", "position": "JUNGLE"},
+    {"champion": "Lux", "side": "ally", "position": "MIDDLE"},
+    {"champion": "Caitlyn", "side": "ally", "position": "BOTTOM"},
+    {"champion": "Yuumi", "side": "ally", "position": "UTILITY"}
+  ],
+  "templates": {
+    "Darius": "templates/Darius.png",
+    "Lee Sin": "templates/LeeSin.png",
+    "Ahri": "templates/Ahri.png",
+    "Jinx": "templates/Jinx.png",
+    "Nautilus": "templates/Nautilus.png",
+    "Garen": "templates/Garen.png",
+    "Amumu": "templates/Amumu.png",
+    "Lux": "templates/Lux.png",
+    "Caitlyn": "templates/Caitlyn.png",
+    "Yuumi": "templates/Yuumi.png"
+  },
+  "regions": []
+}

@@ -38,6 +38,10 @@ def needs_fresh_screen(text):
 
 
 def needs_tools(text):
+    if re.search(r"\b(?:calibrat|label|review|vision status).{0,35}(?:league|recording|video|minimap|sighting)|\bleague vision (?:calibrat|status)",text,re.I):
+        return True
+    if re.search(r"\b(?:analy[sz]e|load|review).{0,40}(?:recording|replay|video|report)\b",text,re.I):
+        return True
     # Advice ('how do I open...') is conversation; execution stays with tools.
     if re.search(r"\b(remember|my name is|my favou?rite|i (?:like|love|hate|prefer)|"
                  r"i (?:dislike|enjoy|live|work)|i (?:don't|dont) like|you(?:'re| are) my|"
@@ -132,6 +136,10 @@ def conversation_messages(messages, context, game=None):
         "Do not turn unrelated questions into gaming advice. A previous assistant statement is not independent verification. "
         "Never add specifics about a match, patch, price or ability without supporting current evidence. "
         "For League of Legends, distinguish general strategy from current match evidence. "
+        + ("For requested post-game coaching, separate recorded observations, interpretations and uncertainty. "
+           "Only user-marked missed sightings establish reported misses; never infer attention or hidden enemy routes. "
+           "Video timestamps and game-clock events cannot be aligned without calibration. "
+           if isinstance(data["league"],dict) and "post_game_review" in data["league"] else "") +
         "Local League data describes own-player stats, visible champion select and recorded events; it does not reveal enemy "
         "positions, cooldowns, lane state, or safe fights. Do not invent current patch builds "
         "or item prices. Ask briefly for missing matchup or situation details when needed. "

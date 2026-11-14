@@ -3,6 +3,7 @@ from tools.applications import open_application, close_application
 from tools.files import list_files, search_file, open_path
 from tools.browser import open_url, search_web
 from tools.spatial import SPATIAL_TOOLS
+from tools.league import LEAGUE_TOOLS
 
 from memory.database import remember_fact, search_memories
 
@@ -20,6 +21,7 @@ AVAILABLE_FUNCTIONS = {
     "search_memories": search_memories,
 }
 AVAILABLE_FUNCTIONS.update({function.__name__: function for function in SPATIAL_TOOLS})
+AVAILABLE_FUNCTIONS.update({function.__name__: function for function in LEAGUE_TOOLS})
 
 
 TOOLS = [
@@ -35,3 +37,4 @@ TOOLS = [
     search_memories,
 ]
 TOOLS.extend(SPATIAL_TOOLS)
+TOOLS.extend(LEAGUE_TOOLS)

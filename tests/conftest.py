@@ -18,7 +18,7 @@ def isolated_memory(tmp_path, monkeypatch):
     priority = InferencePriority()
     # Real-clock cooldowns must not leak into tests with fake clocks, nor may
     # a completed test retain a foreground reservation in another test.
-    for module in ("core.inference_priority", "core.model_client", "gui.workers", "gui.vision"):
+    for module in ("core.inference_priority", "core.model_client", "gui.workers", "gui.vision", "gui.league_replay", "gui.league_vision", "gui.league_calibration"):
         attribute = "priority" if module == "core.inference_priority" else "inference_priority"
         monkeypatch.setattr(f"{module}.{attribute}", priority)
     monkeypatch.setattr(database, "DATABASE", tmp_path / "memory.db")
@@ -31,6 +31,13 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.LEAGUE_CHAMP_SELECT_ENABLED", False)
     monkeypatch.setattr("config.LEAGUE_EVENTS_ENABLED", False)
     monkeypatch.setattr("config.LEAGUE_PROACTIVE_VOICE_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_STATIC_DOWNLOADS_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_SIGHTING_NOTES_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_REPLAY_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_VISION_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_VISION_RIOT_APPROVED", False)
+    monkeypatch.setattr("config.LEAGUE_VISION_CALIBRATION", tmp_path / "league-vision" / "calibration.json")
+    monkeypatch.setattr("config.DATA_DIR",tmp_path)
     monkeypatch.setattr("config.VISION_LIVE_CAPTURE_ENABLED", False)
     monkeypatch.setattr("config.VOICE_PRELOAD_ON_STARTUP", False)
     monkeypatch.setattr("config.CONVERSATION_PRELOAD_ON_STARTUP", False)

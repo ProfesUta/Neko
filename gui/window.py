@@ -36,6 +36,15 @@ class CapriWindow(QMainWindow):
         super().__init__()
         self.messages = messages
         self.context = context
+        from gui.league_replay import ReplayService
+        self.replay_service = ReplayService(context.league,self)
+        context.league_replay = self.replay_service
+        self.replay_service.stopped.connect(self._finish_close_if_ready)
+        from gui.league_vision import LeagueVisualService
+        self.league_visual_service=LeagueVisualService(context.league,self)
+        context.league_visual=self.league_visual_service
+        self.league_visual_service.stopped.connect(self._finish_close_if_ready)
+        self.league_visual_service.notice.connect(self._replay_notice)
         self.voice_worker = None
         self.voice_warmup_worker = None
         self._voice_preload_status = "Voice models load when enabled"
@@ -83,6 +92,7 @@ class CapriWindow(QMainWindow):
         self.setFixedSize(330, 350)
         self.setup_ui()
         self.chat_panel = ChatPanel(self)
+        self.replay_service.notice.connect(self._replay_notice)
         self.chat_panel.message_submitted.connect(self.send_text)
         self.chat_panel.stop_requested.connect(self.stop_current_turn)
         self.chat_panel.geometry_changed.connect(self._update_vision_geometry)
@@ -131,6 +141,7 @@ class CapriWindow(QMainWindow):
             ("Ctrl+J", self.toggle_chat), ("Ctrl+M", self.toggle_voice),
             ("Ctrl+.", self.stop_current_turn),
             ("Ctrl+T", self.teleport_randomly),
+            ("Ctrl+Shift+L", self._open_league_calibration),
         ):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -147,10 +158,17 @@ class CapriWindow(QMainWindow):
             self.league_worker = LeagueWorker(self.context.league, self.window_grounder)
             self.league_worker.notification.connect(self.handle_league_notification)
             self.league_worker.session_active_changed.connect(self.set_league_companion_mode, Qt.ConnectionType.QueuedConnection)
+            self.league_worker.session_active_changed.connect(self.replay_service.cancel, Qt.ConnectionType.QueuedConnection)
+            self.league_worker.session_active_changed.connect(self.league_visual_service.sync, Qt.ConnectionType.QueuedConnection)
+            self.league_worker.visual_state_changed.connect(self.league_visual_service.sync, Qt.ConnectionType.QueuedConnection)
             self.league_worker.session_display_changed.connect(self._league_display_changed, Qt.ConnectionType.QueuedConnection)
             self.league_worker.warning.connect(lambda text: self.chat_panel.append_message("League", text))
             self.league_worker.finished.connect(self.league_worker_finished)
             self.league_worker.start()
+
+    def _replay_notice(self, text):
+        if not self._closing:
+            self.chat_panel.append_message("League replay",text)
 
     def league_worker_finished(self):
         worker, self.league_worker = self.league_worker, None
@@ -690,7 +708,8 @@ class CapriWindow(QMainWindow):
                 return
             self.chat_panel.append_message("Capri // League", advice.text)
             self.messages.append({"role": "assistant", "content": advice.text, "proactive": True,
-                                  "source": "league_api", "evidence": advice.text, "captured_at": advice.captured_at})
+                                  "source": "league_visual" if advice.event_key.startswith("visual:") else "league_api",
+                                  "evidence": advice.text, "captured_at": advice.captured_at})
             self.advice_bubble.show_tip(advice.text)
             return
         if (
@@ -718,6 +737,9 @@ class CapriWindow(QMainWindow):
     def handle_advice_error(self, error):
         # Passive advice must never raise/activate chat over the user's game.
         self.chat_panel.append_message("Status", f"Screen tip speech unavailable: {error}")
+
+    def _open_league_calibration(self):
+        if not self._closing:self.league_visual_service.open_calibration()
 
     def toggle_vision(self):
         if self._closing:
@@ -1152,6 +1174,8 @@ class CapriWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._closing = True
+        self.replay_service.close()
+        self.league_visual_service.close()
         self._tts_active = False
         self.sprite.set_league_speaking(False)
         self._live_status_timer.stop()
@@ -1166,7 +1190,8 @@ class CapriWindow(QMainWindow):
         self.controls_popup.hide()
         self.advice_bubble.hide()
         workers = (self.voice_worker, self.chat_worker, self.advice_worker, self.vision_worker,
-                   self.voice_warmup_worker, self.league_worker)
+                   self.voice_warmup_worker, self.league_worker, self.replay_service.worker,self.league_visual_service.worker,
+                   self.league_visual_service.recording_worker)
         if any(worker is not None and worker.isRunning() for worker in workers):
             self._closing = True
             self._movement_timer.stop()
@@ -1180,6 +1205,9 @@ class CapriWindow(QMainWindow):
             event.ignore()
             return
         self.chat_panel.close()
+        self.context.league.knowledge.close()
+        self.context.league_replay = None
+        self.context.league_visual = None
         self.teleport_effects.dispose()
         self.movement_coordinator.dispose()
         self.monitor_manager.dispose()
@@ -1189,5 +1217,6 @@ class CapriWindow(QMainWindow):
         if not self._closing:
             return
         if all(worker is None for worker in (self.voice_worker, self.chat_worker, self.advice_worker,
-                                            self.vision_worker, self.voice_warmup_worker, self.league_worker)):
+                                            self.vision_worker, self.voice_warmup_worker, self.league_worker,self.replay_service.worker,self.league_visual_service.worker,
+                                            self.league_visual_service.recording_worker)):
             self.close()

@@ -25,7 +25,16 @@ of Riot Games or anyone officially involved in producing or managing Riot Games
 properties. Riot Games and all associated properties are trademarks or registered
 trademarks of Riot Games, Inc.
 
-Champion names use cached [Riot Data Dragon](https://developer.riotgames.com/docs/lol#data-dragon)
+Champion names, ability references, tips and item descriptions use cached
+[Riot Data Dragon](https://developer.riotgames.com/docs/lol#data-dragon)
 data. The read-only League integrations use the local Live Client Data API and
 the unsupported League Client API. See [Riot's League documentation and policies](https://developer.riotgames.com/docs/lol).
 No player input, process memory access, hidden identity lookup, or gameplay automation is used.
+
+## Optional recorded-video analysis
+
+Recorded-game analysis uses the CPU-only `opencv-python-headless` package,
+provided by the [OpenCV project](https://pypi.org/project/opencv-python-headless/).
+OpenCV and its bundled components retain their upstream licenses and package
+notices. This optional dependency does not supply a second Qt GUI or run live
+minimap tracking. User-supplied gameplay recordings and icon crops remain local.

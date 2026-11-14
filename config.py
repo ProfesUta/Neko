@@ -41,6 +41,19 @@ MAX_HISTORY_TURNS = 30
 DATA_DIR = Path(os.getenv(
     "CAPRI_DATA_DIR", str(Path(__file__).resolve().parent / "data"),
 )).expanduser().resolve()
+LEAGUE_KNOWLEDGE_ENABLED = os.getenv("CAPRI_LEAGUE_KNOWLEDGE", "1") != "0"
+LEAGUE_STATIC_DOWNLOADS_ENABLED = os.getenv("CAPRI_LEAGUE_STATIC_DOWNLOADS", "1") != "0"
+LEAGUE_KNOWLEDGE_PATCH = os.getenv("CAPRI_LEAGUE_PATCH", "")  # Empty: reuse pinned cache; update explicitly.
+# Keep this off until Riot has reviewed this product's user-reported sighting feature.
+LEAGUE_SIGHTING_NOTES_ENABLED = os.getenv("CAPRI_LEAGUE_SIGHTING_NOTES_APPROVED", "0") == "1"
+LEAGUE_REPLAY_ENABLED = os.getenv("CAPRI_LEAGUE_REPLAY", "0") == "1"  # Recorded files only; explicit command.
+LEAGUE_VISION_ENABLED = os.getenv("CAPRI_LEAGUE_VISION", "0") == "1"
+LEAGUE_VISION_RIOT_APPROVED = os.getenv("CAPRI_LEAGUE_VISION_APPROVED", "0") == "1"
+LEAGUE_VISION_FPS = float(os.getenv("CAPRI_LEAGUE_VISION_FPS", "10"))
+LEAGUE_VISION_FALLBACK_ROLE = os.getenv("CAPRI_LEAGUE_FALLBACK_ROLE", "UNKNOWN").upper()
+LEAGUE_VISION_CALIBRATION = Path(os.getenv("CAPRI_LEAGUE_VISION_CALIBRATION",str(DATA_DIR/"league-vision"/"calibration.json")))
+LEAGUE_VISION_MAX_FRAME_AGE = .35
+LEAGUE_VISION_ALERT_LIFETIME = 1.0
 VISION_MODEL = os.getenv("CAPRI_VISION_MODEL", "qwen2.5vl:7b")
 VISION_CONTEXT_TOKENS = int(os.getenv("CAPRI_VISION_CONTEXT_TOKENS", "8192"))
 VISION_MAX_CONTEXT_TOKENS = int(os.getenv("CAPRI_VISION_MAX_CONTEXT_TOKENS", "16384"))

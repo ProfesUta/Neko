@@ -9,6 +9,10 @@ data/memory.db
 data/vision.log*
 data/league-champions.json
 data/league-champions.tmp
+data/league-knowledge/
+data/league-replays/
+data/league-vision/
+tests/fixtures/league_real_gameplay.mp4
 data/personal-pronunciations*
 test_voice.wav
 

@@ -86,6 +86,7 @@ class LeagueWorker(QThread):
     warning = Signal(str)
     session_active_changed = Signal(bool)
     session_display_changed = Signal(object)
+    visual_state_changed = Signal(object)
 
     def __init__(self, league, grounder=None):
         super().__init__()
@@ -162,6 +163,7 @@ class LeagueWorker(QThread):
         self.league.on_session_active_changed = self._session_changed
         self.league.on_gameflow_changed = self._gameflow_changed
         self.league.on_live_game_ready = self._live_game_ready
+        self.league.on_visual_state_changed = self.visual_state_changed.emit
         self._session_changed(self.league.session_active)
         try:
             asyncio.run(serve())
@@ -177,6 +179,7 @@ class LeagueWorker(QThread):
             self.league.on_session_active_changed = None
             self.league.on_gameflow_changed = None
             self.league.on_live_game_ready = None
+            self.league.on_visual_state_changed = None
             self._task = self._loop = None
             if self.league.metrics.enabled:
                 logging.info("League latency summary (milliseconds): %s", json.dumps(self.league.metrics.report()))
@@ -262,8 +265,15 @@ class ConversationWorker(QThread):
         self.messages.append({"role": "user", "content": text})
         self.user_text.emit(text)
         check_cancelled(self._cancellation)
+        handler = getattr(self.context.league, "companion_answer", None)
+        companion_answer = handler(text, self._cancellation) if handler else None
+        if companion_answer:
+            _trim_history(self.messages)
+            self.messages.append({"role": "assistant", "content": companion_answer})
+            return companion_answer
+        postgame = getattr(self.context.league,"postgame_context",lambda text:None)(text)
         recent_users = [item for item in self.messages[:-1] if item.get("role") == "user" and not is_proactive(item)][-4:]
-        league_request = league_question(text, recent_users, self.context.league.champ_select.names.names.values())
+        league_request = not postgame and league_question(text, recent_users, self.context.league.champ_select.names.names.values())
         if league_request and information_request(text) and not needs_tools(text):
             direct_answer = self._league_reply(text)
             _trim_history(self.messages)
@@ -292,9 +302,9 @@ class ConversationWorker(QThread):
                 logging.info("Direct spatial action: %s in %.0f ms (no chat model)",
                              result.get("status"), (time.monotonic() - started) * 1000)
                 return answer
-        game = None
+        game = {"post_game_review":postgame} if postgame else None
         screen_status = self.context.get_screen_status()
-        screen_enabled = screen_status["enabled"]
+        screen_enabled = screen_status["enabled"] and not postgame
         capability = screen_capability_question(text)
         if capability and (not screen_enabled or screen_status["available"] or screen_status.get("live", {}).get("capturing")):
             answer = screen_status_reply(self.context)
@@ -317,7 +327,7 @@ class ConversationWorker(QThread):
                 return direct_answer
         check_cancelled(self._cancellation)
         self.status_changed.emit("Thinking")
-        if (config.CONVERSATION_STREAMING_ENABLED and not needs_tools(text)
+        if (config.CONVERSATION_STREAMING_ENABLED and (postgame or not needs_tools(text))
                 and not (spatial_request(text) and needs_fresh_screen(text))):
             from core.streaming import StreamingReply
             # The callback runs only after feed; a model failure also stops audio.

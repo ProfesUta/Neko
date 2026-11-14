@@ -1,0 +1,2 @@
+# Optional recorded-video/local CV analysis; loaded only on explicit opt-in.
+opencv-python-headless==5.0.0.93

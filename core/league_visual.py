@@ -1,0 +1,353 @@
+"""Local, calibrated pixel evidence. No model, memory reading or route inference."""
+import math
+import time
+from collections import deque
+from dataclasses import dataclass, asdict, replace
+from pathlib import Path
+
+import config
+from core.league_lane import LaneContext
+from core.league_replay import MinimapDetector, bounds, finite, local_file, read_json
+from core.league_voice import LeagueAnnouncement
+
+
+@dataclass(frozen=True)
+class VisualObservation:
+    champion: str
+    team: str
+    location: str
+    confidence: float
+    visible: bool
+    timestamp: float
+    source: str
+    position: tuple
+    box: tuple
+    assigned_role: str | None = None
+    assigned_lane: str | None = None
+    in_assigned_lane: bool | None = None
+    near_player: bool | None = None
+    distance: float | None = None
+    first_seen_at: float | None = None
+    confidence_kind: str = "template similarity, not calibrated probability"
+
+    def to_dict(self):
+        return asdict(self)
+
+
+class VisualCalibration:
+    def __init__(self, spec, directory):
+        if not isinstance(spec,dict):
+            raise ValueError("Calibration must be a JSON object")
+        self.spec = spec
+        self.directory = Path(directory)
+        self.reference = tuple(spec.get("reference_size",()))
+        if len(self.reference)!=2 or any(type(n) is not int or not 100<=n<=7680 for n in self.reference):
+            raise ValueError("Set the measured reference video resolution")
+        self.minimap = bounds(spec.get("minimap"))
+        self.fps = spec.get("fps",10)
+        self.hud_scale = spec.get("hud_scale",1.)
+        self.radius = spec.get("proximity_radius",.12)
+        self.cooldown = spec.get("alert_cooldown",8.)
+        self.threshold = spec.get("threshold",.92)
+        for value,lo,hi,name in ((self.fps,1,30,"FPS"),(self.hud_scale,.5,2,"HUD scale"),
+                                 (self.radius,.01,.5,"proximity radius"),(self.cooldown,0,120,"cooldown"),
+                                 (self.threshold,.8,1,"confidence threshold")):
+            if not finite(value) or not lo<=value<=hi:
+                raise ValueError(f"Invalid {name}")
+        self.orientation = spec.get("team_orientation","unknown")
+        if self.orientation not in ("blue","red","unknown"):
+            raise ValueError("Team orientation must be blue, red or unknown; it never implicitly mirrors pixels")
+        self.muted = spec.get("alerts_muted",True)
+        if type(self.muted) is not bool:
+            raise ValueError("alerts_muted must be boolean")
+        self.fallback = spec.get("fallback_role","UNKNOWN")
+        from core.league_lane import ROLES
+        if self.fallback not in (*ROLES,"UNKNOWN"):
+            raise ValueError("Invalid explicit fallback position")
+        self.viewport = bounds(spec["viewport"]) if spec.get("viewport") is not None else None
+        for key,limit in (("hud_exclusions",30),("blockers",4),("regions",30),("roster",20)):
+            if not isinstance(spec.get(key,[]),list) or len(spec.get(key,[]))>limit:
+                raise ValueError(f"Invalid or oversized {key} list")
+        if not isinstance(spec.get("viewport_nameplates",{}),dict):
+            raise ValueError("viewport_nameplates must be an object")
+        if spec.get("enemy_bar_color","red") not in ("red","yellow"):
+            raise ValueError("Calibrate the enemy health-bar color as red or yellow")
+        self.exclusions = [bounds(box) for box in spec.get("hud_exclusions",[])]
+        self.blockers = spec.get("blockers",[])
+        roster_names={item.get("champion") for item in spec.get("roster",[]) if isinstance(item,dict)}
+        self.viewport_enabled=bool(self.viewport and self.blockers and roster_names
+                                   and set(spec.get("viewport_nameplates",{}))==roster_names)
+        self.regions = []
+        for item in spec.get("regions",[])[:30]:
+            if not isinstance(item,dict) or not isinstance(item.get("label"),str) or not 1<=len(item["label"])<=80:
+                raise ValueError("Invalid named minimap region")
+            if item.get("lane") not in (None,"TOP","MIDDLE","BOTTOM"):
+                raise ValueError("A minimap region's lane must be TOP, MIDDLE, BOTTOM or null")
+            self.regions.append((item["label"],bounds(item.get("bounds")),item.get("lane")))
+
+    @classmethod
+    def load(cls,path):
+        path=local_file(path,purpose="Calibration file")
+        return cls(read_json(path,65536),path.parent)
+
+    def rois(self):
+        result={"minimap":self.minimap}
+        if self.viewport_enabled:
+            result["viewport"]=self.viewport
+        for index,blocker in enumerate(self.blockers):
+            if not isinstance(blocker,dict):
+                raise ValueError("Invalid scoreboard/occlusion blocker")
+            result[f"blocker:{index}"]=bounds(blocker.get("region"))
+        return result
+
+    def validate_size(self,width,height):
+        if min(width,height)<=0 or abs((width/height)/(self.reference[0]/self.reference[1])-1)>.02:
+            raise ValueError("Resolution aspect ratio changed; recalibrate instead of guessing region coordinates")
+
+    def regions_from_frame(self,frame):
+        h,w=frame.shape[:2]
+        self.validate_size(w,h)
+        return {name:frame[round(y*h):round((y+rh)*h),round(x*w):round((x+rw)*w)]
+                for name,(x,y,rw,rh) in self.rois().items()}
+
+    def locate(self,position,lane):
+        matches=[(name,role) for name,(x,y,w,h),role in self.regions if x<=position[0]<=x+w and y<=position[1]<=y+h]
+        if len(matches)!=1:
+            return "the minimap",None
+        name,role=matches[0]
+        return name,(role==lane.assigned_lane) if role in ("TOP","MIDDLE","BOTTOM") and lane.assigned_lane else None
+
+    def offline_lane(self):
+        role=self.spec.get("assigned_role",self.fallback)
+        from core.league_lane import ROLES
+        role=role if role in ROLES else None
+        mode=self.spec.get("game_mode")
+        number=self.spec.get("map_number")
+        supported=mode=="CLASSIC" and number==11
+        lane={"UTILITY":"BOTTOM","BOTTOM":"BOTTOM","TOP":"TOP","MIDDLE":"MIDDLE"}.get(role) if supported else None
+        return LaneContext(role,"operator-labelled recording",lane,mode,number,
+                           {"blue":"ORDER","red":"CHAOS"}.get(self.orientation,""),
+                           self.spec.get("player_champion",""),1,supported)
+
+
+class TemporalConfirmation:
+    def __init__(self,fps=10,frames=3):
+        self.frames=frames
+        self.gap=max(.3,2/fps)
+        self.history={}
+        self.epoch=None
+        self.last_at=None
+
+    def reset(self,epoch):
+        self.history.clear();self.epoch=epoch;self.last_at=None
+
+    def update(self,observations,at,epoch):
+        if self.epoch!=epoch or self.last_at is not None and at<=self.last_at:
+            self.reset(epoch)
+        self.last_at=at
+        current={(item.champion,item.source):item for item in observations}
+        self.history={key:value for key,value in self.history.items() if key in current}
+        result=[]
+        for key,item in current.items():
+            samples=self.history.setdefault(key,deque(maxlen=self.frames))
+            if samples and (at-samples[-1].timestamp>self.gap or math.dist(item.position,samples[-1].position)>.15):
+                samples.clear()
+            samples.append(item)
+            if len(samples)>=self.frames:
+                result.append(replace(item,confidence=min(s.confidence for s in samples),first_seen_at=samples[0].timestamp))
+        return tuple(result)
+
+
+class ViewportMatcher:
+    """Champion-nameplate + nearby enemy health bar. No 3D/skin identity claim."""
+    def __init__(self,profile):
+        import cv2
+        import numpy as np
+        self.cv2,self.np,self.profile=cv2,np,profile
+        self.templates={}
+        if not profile.viewport_enabled:
+            return
+        refwidth=round(profile.viewport[2]*profile.reference[0])
+        self.target_width=min(960,refwidth)
+        self.scale=min(1,960/refwidth)
+        roster={item["champion"] for item in profile.spec.get("roster",[])}
+        for name,files in profile.spec.get("viewport_nameplates",{}).items():
+            if name not in roster or not isinstance(files,list) or not 1<=len(files)<=4:
+                raise ValueError("Viewport references must identify a known roster champion")
+            self.templates[name]=[]
+            for filename in files:
+                path=local_file(profile.directory/filename)
+                if path.stat().st_size>1_000_000:
+                    raise ValueError("Viewport reference is too large")
+                image=cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
+                if image is None or min(image.shape)<5 or max(image.shape)>256 or float(np.std(image))<8:
+                    raise ValueError("Use a textured, tightly cropped champion-nameplate reference")
+                image=cv2.resize(image,None,fx=self.scale*profile.hud_scale,fy=self.scale*profile.hud_scale)
+                self.templates[name].append(image)
+
+    def detect(self,image,enemy_names,at,lane):
+        if not self.templates:
+            return []
+        cv2,np=self.cv2,self.np
+        h,w=image.shape[:2]
+        ratio=self.target_width/w
+        image=cv2.resize(image,None,fx=ratio,fy=ratio)
+        gray=cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
+        hsv=cv2.cvtColor(image,cv2.COLOR_BGR2HSV)
+        if self.profile.spec.get("enemy_bar_color","red")=="yellow":
+            red=cv2.inRange(hsv,np.array([18,140,80]),np.array([38,255,255]))
+        else:
+            red=cv2.inRange(hsv,np.array([0,140,80]),np.array([10,255,255])) | cv2.inRange(hsv,np.array([170,140,80]),np.array([179,255,255]))
+        _,_,stats,_=cv2.connectedComponentsWithStats(red)
+        bars=[(x,y,bw,bh) for x,y,bw,bh,area in stats[1:] if 15<=bw<=240 and 1<=bh<=15 and bw>=bh*3 and area>=bw*.5]
+        if not bars or len(bars)>64:
+            return []
+        # All coordinates below are local to the cropped viewport.
+        output=[]
+        for name in enemy_names:
+            best=None
+            for reference in self.templates.get(name,[]):
+                th,tw=reference.shape
+                if th>gray.shape[0] or tw>gray.shape[1]:continue
+                # Search only beside actual enemy-colored health bars. This also
+                # avoids scanning most HUD/terrain pixels for every champion.
+                dx=max(80*self.scale*self.profile.hud_scale,tw)
+                dy=50*self.scale*self.profile.hud_scale
+                best_match=None
+                for bx,by,bw,bh in bars:
+                    left=max(0,math.floor(bx+bw/2-dx-tw/2));right=min(gray.shape[1],math.ceil(bx+bw/2+dx+tw/2))
+                    top=max(0,math.floor(by-dy-th));bottom=min(gray.shape[0],math.ceil(by+dy))
+                    search=gray[top:bottom,left:right]
+                    if search.shape[0]<th or search.shape[1]<tw:continue
+                    _,score,_,(x,y)=cv2.minMaxLoc(cv2.matchTemplate(search,reference,cv2.TM_CCOEFF_NORMED))
+                    if best_match is None or score>best_match[0]:best_match=(score,x+left,y+top)
+                if best_match is None:continue
+                score,x,y=best_match
+                if score<self.profile.threshold or not math.isfinite(score):continue
+                cx,cy=(x+tw/2)/gray.shape[1],(y+th/2)/gray.shape[0]
+                vx,vy,vw,vh=self.profile.viewport
+                gx,gy=vx+cx*vw,vy+cy*vh
+                if any(ex<=gx<=ex+ew and ey<=gy<=ey+eh for ex,ey,ew,eh in (*self.profile.exclusions,self.profile.minimap)):
+                    continue
+                nearby=any(abs((bx+bw/2)-(x+tw/2))<dx and abs(by-(y+th))<dy for bx,by,bw,bh in bars)
+                if not nearby:continue
+                patch=gray[y:y+th,x:x+tw]
+                competitor=max((float(cv2.matchTemplate(patch,cv2.resize(other,(tw,th)),cv2.TM_CCOEFF_NORMED)[0,0])
+                                for other_name,variants in self.templates.items() if other_name!=name for other in variants),default=-1)
+                if not math.isfinite(competitor) or score-competitor<self.profile.spec.get("margin",.08):continue
+                if best is None or score>best.confidence:
+                    best=VisualObservation(name,"enemy","the game view",round(score,5),True,at,"viewport",(cx,cy),
+                                           (x/gray.shape[1],y/gray.shape[0],tw/gray.shape[1],th/gray.shape[0]),
+                                           lane.role,lane.assigned_lane)
+            if best:output.append(best)
+        return output
+
+
+class LeagueVisualPipeline:
+    def __init__(self,profile):
+        import cv2
+        self.profile=profile
+        if any(not isinstance(item,dict) for item in profile.spec.get("roster",[])):
+            raise ValueError("Provide the known ally/enemy champion roster")
+        enemies=[item["champion"] for item in profile.spec.get("roster",[]) if item.get("side")=="enemy"]
+        if not enemies:raise ValueError("Calibrate a known enemy roster")
+        spec={**profile.spec,"target_champion":enemies[0]}
+        self.minimap=MinimapDetector(spec,profile.directory,allow_any_enemy=True,scale_factor=profile.hud_scale)
+        self.enemies=tuple(enemies)
+        self.temporal=TemporalConfirmation(profile.fps)
+        self.viewport=ViewportMatcher(profile)
+        self.blockers=[]
+        for index,item in enumerate(profile.blockers):
+            path=local_file(profile.directory/item["image"])
+            if path.stat().st_size>1_000_000:raise ValueError("Occlusion reference too large")
+            image=cv2.imread(str(path),cv2.IMREAD_GRAYSCALE)
+            if image is None or min(image.shape)<5 or max(image.shape)>512 or float(image.std())<8:
+                raise ValueError("Use a textured scoreboard/occlusion reference")
+            self.blockers.append((f"blocker:{index}",image))
+
+    def process(self,regions,lane,at):
+        import cv2
+        if not lane.supported:
+            self.temporal.reset(lane.epoch)
+            return ()
+        for key,reference in self.blockers:
+            crop=regions.get(key)
+            if crop is None:raise ValueError("Occlusion region missing; refusing viewport/HUD identities")
+            gray=cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY)
+            gray=cv2.resize(gray,(round(self.profile.rois()[key][2]*self.profile.reference[0]),
+                                   round(self.profile.rois()[key][3]*self.profile.reference[1])))
+            if reference.shape[0]<=gray.shape[0] and reference.shape[1]<=gray.shape[1]:
+                score=cv2.minMaxLoc(cv2.matchTemplate(gray,reference,cv2.TM_CCOEFF_NORMED))[1]
+                if score>=.95:
+                    self.temporal.reset(lane.epoch)
+                    return ()
+        raw=regions.get("minimap")
+        if raw is None:raise ValueError("Calibrated minimap region missing")
+        crop=cv2.resize(raw,(self.minimap.width,self.minimap.height),interpolation=cv2.INTER_AREA)
+        crop=self.minimap.prepare(crop)  # Once per frame, shared by every champion.
+        gray=cv2.cvtColor(crop,cv2.COLOR_BGR2GRAY)
+        allies={item["champion"] for item in self.minimap.roster if item["side"]=="ally"}
+        own=self.minimap.match(crop,lane.player_champion,gray) if lane.player_champion in allies else None
+        observations=[]
+        for name in self.enemies:
+            found=self.minimap.match(crop,name,gray)
+            if found is None:continue
+            position=found["minimap_position"]
+            location,in_lane=self.profile.locate(position,lane)
+            distance=math.dist(position,own["minimap_position"]) if own else None
+            x,y,w,h=found["pixel_box"]
+            observations.append(VisualObservation(name,"enemy",location,found["template_similarity"],True,at,"minimap",
+                position,(x/self.minimap.width,y/self.minimap.height,w/self.minimap.width,h/self.minimap.height),
+                lane.role,lane.assigned_lane,in_lane,distance<=self.profile.radius if distance is not None else None,distance))
+        if "viewport" in regions:
+            observations.extend(self.viewport.detect(regions["viewport"],self.enemies,at,lane))
+        return self.temporal.update(observations,at,lane.epoch)
+
+
+class VisualAlertDispatcher:
+    """Deterministic, current-only proposals to the existing one-slot voice policy."""
+    def __init__(self,profile):
+        self.profile=profile
+        self.current={}
+        self.cooldowns={}
+        self.offered={}
+        self.epoch=None
+        self.sequence=0
+        import uuid
+        self.token=uuid.uuid4().hex[:8]
+        self.muted=profile.muted
+
+    def update(self,observations,epoch,now=None,*,live=False,approved=False):
+        now=time.monotonic() if now is None else now
+        if self.epoch!=epoch:
+            self.current.clear();self.cooldowns.clear();self.offered.clear();self.epoch=epoch
+        self.current={(item.champion,item.source):item for item in observations
+                      if item.visible and 0<=now-item.timestamp<=config.LEAGUE_VISION_MAX_FRAME_AGE}
+        if self.muted or live and not approved:
+            return ()
+        proposals=[]
+        for item in self.current.values():
+            if item.confidence<self.profile.threshold or now-self.cooldowns.get(item.champion,-math.inf)<self.profile.cooldown:
+                continue
+            if not (item.near_player is True or item.in_assigned_lane is True or item.source=="viewport"):
+                continue
+            self.sequence+=1
+            key=f"visual:{self.token}:{item.champion}:{self.sequence}"
+            text=f"{item.champion} visible in {item.location}." if item.location!="the minimap" else f"{item.champion} visible on the minimap."
+            announcement=LeagueAnnouncement(text,key,now,config.LEAGUE_VISION_ALERT_LIFETIME,0,
+                                            time.perf_counter_ns(),epoch,item.champion,detected_ns=time.perf_counter_ns())
+            self.offered[key]=item
+            self.cooldowns[item.champion]=now
+            proposals.append(announcement)
+        while len(self.offered)>64:self.offered.pop(next(iter(self.offered)))
+        return tuple(proposals)
+
+    def is_current(self,announcement,now=None):
+        now=time.monotonic() if now is None else now
+        original=self.offered.get(announcement.event_key)
+        current=self.current.get((original.champion,original.source)) if original else None
+        return bool(not self.muted and announcement.epoch==self.epoch and current is not None
+                    and current.confidence>=self.profile.threshold
+                    and (current.near_player is True or current.in_assigned_lane is True or current.source=="viewport")
+                    and current.location==original.location and 0<=now-current.timestamp<=config.LEAGUE_VISION_MAX_FRAME_AGE
+                    and 0<=now-announcement.captured_at<=announcement.lifetime)
