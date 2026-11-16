@@ -43,12 +43,18 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.CONVERSATION_PRELOAD_ON_STARTUP", False)
     monkeypatch.setattr("config.SPEAK_TYPED_REPLIES_BY_DEFAULT", False)
     monkeypatch.setattr("config.TTS_BACKEND", "kokoro")
+    monkeypatch.setattr("config.KOKORO_CANCEL_POLICY","cooperative")
+    monkeypatch.setattr("config.KOKORO_ABANDON_TIMEOUT_SECONDS",1.)
+    monkeypatch.setattr("config.KOKORO_STARTUP_DRAIN_SECONDS",10.)
     # Private pronunciation choices are opt-in fixtures, never personal test data.
     monkeypatch.setattr("config.PERSONAL_PRONUNCIATIONS_FILE", None)
     # Native-chunk tests opt in explicitly; legacy adapters mock complete WAVs.
     monkeypatch.setattr("config.TTS_NATIVE_STREAMING_ENABLED", False)
     monkeypatch.setattr("config.VOICE_BARGE_IN_ENABLED", False)
     yield
+    # Async native draining must finish before fixture assets/patches disappear.
+    from voice.kokoro_session import session
+    session.shutdown()
     from core.model_client import shutdown
     from core.latency import clear_trace
     shutdown()

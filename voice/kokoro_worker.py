@@ -15,6 +15,14 @@ CHAMPION_LEXICON = Path(__file__).with_name("champion-pronunciations.lexicon")
 CONVERSATION_LEXICON = Path(__file__).with_name("conversation-pronunciations.lexicon")
 
 
+def callback_cancellation_supported():
+    try:
+        import sherpa_onnx
+        return "0 to stop generation early" in (sherpa_onnx.OfflineTts.generate.__doc__ or "")
+    except (ImportError,AttributeError):
+        return False
+
+
 def validate_assets(asset_dir):
     directory = Path(asset_dir).expanduser().resolve()
     if not directory.is_dir():
@@ -129,14 +137,30 @@ def synthesize(tts, request, on_chunk=None):
     if speaker >= tts.num_speakers:
         raise ValueError(f"Kokoro voice has {tts.num_speakers} speakers; speaker {speaker} is unavailable")
     chunk_count = 0
+    # Protocol 2 cancellation is per request and scoped to its owned directory.
+    # sherpa-onnx 2.0.1 explicitly documents callback 0 as early stop.
+    cancel_path = request.get("cancel_path")
+    if cancel_path is not None:
+        cancel_path = Path(cancel_path).resolve()
+        if cancel_path.parent != output.parent or cancel_path.name != "cancel":
+            raise ValueError("Invalid Kokoro cancellation marker")
+    def cancelled():
+        return cancel_path is not None and cancel_path.is_file()
+    if cancelled():
+        return {"cancelled": True}
     profiled = request.get("profile") is True
     first_callback_cpu = None
     def chunk(samples, progress):
         nonlocal chunk_count, first_callback_cpu
+        if cancelled():
+            return 0
         callback_at = time.perf_counter_ns() if profiled else 0
         if profiled and first_callback_cpu is None:
             first_callback_cpu = time.process_time_ns() - cpu
+        if on_chunk is None:
+            return 1
         path = output.with_name(f"{output.stem}-{chunk_count}.wav")
+        index = chunk_count
         chunk_count += 1
         values = np.asarray(samples, dtype=np.float32)
         if values.ndim != 1 or not values.size or not np.isfinite(values).all():
@@ -148,14 +172,20 @@ def synthesize(tts, request, on_chunk=None):
             stream.writeframes(pcm)
         message = {"chunk": str(path), "frames": int(values.size), "sample_rate": tts.sample_rate,
                    "generation_complete": bool(progress >= 1.0)}
+        if request.get("request_id") is not None:
+            message["chunk_index"] = index
         if profiled:
             message["timing"] = {"generate_enter_ns": wall, "callback_ns": callback_at,
                                  "pcm_ns": converted_at, "wav_ns": time.perf_counter_ns()}
         on_chunk(message)
         return 1
-    options = {"callback": chunk} if on_chunk is not None else {}
+    options = {"callback": chunk} if on_chunk is not None or cancel_path is not None else {}
     wall, cpu = (time.perf_counter_ns(), time.process_time_ns()) if profiled else (0, 0)
     audio = tts.generate(text, sid=speaker, speed=speed, **options)
+    if cancelled():
+        # Early-stop audio is partial and must never be written or played.
+        return {"cancelled": True,**({"synthesis_wall_ns":time.perf_counter_ns()-wall,
+                "synthesis_cpu_ns":time.process_time_ns()-cpu} if profiled else {})}
     returned_at = time.perf_counter_ns() if profiled else 0
     samples = np.asarray(audio.samples, dtype=np.float32)
     sample_rate = int(audio.sample_rate)
@@ -173,8 +203,10 @@ def synthesize(tts, request, on_chunk=None):
             stream.writeframes(pcm.tobytes())
         written_at = time.perf_counter_ns() if profiled else 0
         if on_chunk is not None:
-            on_chunk({"chunk": str(output), "frames": int(samples.size), "sample_rate": sample_rate,
-                      "generation_complete": True})
+            message={"chunk": str(output), "frames": int(samples.size), "sample_rate": sample_rate,
+                     "generation_complete": True}
+            if request.get("request_id") is not None:message["chunk_index"]=0
+            on_chunk(message)
     result = {"ok": True, "sample_rate": sample_rate, "frames": int(samples.size)}
     if profiled:
         result.update(synthesis_wall_ns=time.perf_counter_ns() - wall, synthesis_cpu_ns=time.process_time_ns() - cpu)
@@ -194,17 +226,24 @@ def main():
     parser.add_argument("--personal-pronunciations", type=Path)
     args = parser.parse_args()
     tts = create_tts(args.asset_dir, args.num_threads, args.cpu_options, args.personal_pronunciations)
-    print(json.dumps({"ready": True, "speakers": tts.num_speakers, "sample_rate": tts.sample_rate}), flush=True)
+    print(json.dumps({"ready": True, "protocol": 2,"cancel_callback":callback_cancellation_supported(), "speakers": tts.num_speakers,
+                      "sample_rate": tts.sample_rate}), flush=True)
     for line in sys.stdin:
+        request_id=None
+        def emit(message):
+            if request_id is not None:message={**message,"request_id":request_id}
+            print(json.dumps(message,allow_nan=False),flush=True)
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("Kokoro request must be a JSON object")
-            emit = lambda message: print(json.dumps(message), flush=True)
+            request_id=request.get("request_id")
+            if request_id is not None and (not isinstance(request_id,str) or not 1<=len(request_id)<=64 or not request_id.isalnum()):
+                raise ValueError("Invalid Kokoro request identifier")
             response = synthesize(tts, request, on_chunk=emit if request.get("stream") is True else None)
         except Exception as error:
             response = {"error": str(error)}
-        print(json.dumps(response, allow_nan=False), flush=True)
+        emit(response)
 
 
 if __name__ == "__main__":

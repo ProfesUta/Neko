@@ -26,10 +26,13 @@ def test_speech_cleaning_preserves_meaning():
     assert tts.clean_for_speech("x * y * z") == "x * y * z"
 
 
-def test_stop_terminates_real_synthesis_subprocess(monkeypatch, tmp_path):
+def test_restart_policy_terminates_unready_subprocess(monkeypatch, tmp_path):
     from voice.kokoro_session import session
     from voice.kokoro_worker import ASSET_FILES
     session.shutdown()
+    # Explicit rollback policy retains immediate termination. The default now
+    # preserves a loading model, covered by test_kokoro_recovery's bounded cases.
+    monkeypatch.setattr(config,"KOKORO_CANCEL_POLICY","restart")
     assets = tmp_path / "voice"
     assets.mkdir()
     for name in ASSET_FILES:
@@ -54,11 +57,12 @@ def test_stop_terminates_real_synthesis_subprocess(monkeypatch, tmp_path):
     try:
         with pytest.raises(OperationCancelled):
             tts._synthesize("A long reply", tmp_path / "test.wav", stop)
+        assert processes[0].poll() is not None
+        assert time.monotonic() - started < 3
     finally:
         timer.cancel()
         timer.join()
-    assert processes[0].poll() is not None
-    assert time.monotonic() - started < 3
+        session.shutdown()
 
 
 def test_stop_halts_playback(monkeypatch, tmp_path):

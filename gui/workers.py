@@ -546,9 +546,11 @@ class ConversationWorker(QThread):
                     self.advice_started.emit(advice)
                     if visual_event:self.advice_ready.emit(advice)
                 options["on_started"] = started
-            self._speak(advice.text, cancel_event=cancellation,
-                        start_deadline=advice.captured_at + (advice.lifetime if league_event else ADVICE_MAX_AGE_SECONDS),
-                        urgent=not league_event, **options)
+            from voice.kokoro_session import speech_priority
+            with speech_priority(0):
+                self._speak(advice.text, cancel_event=cancellation,
+                            start_deadline=advice.captured_at + (advice.lifetime if league_event else ADVICE_MAX_AGE_SECONDS),
+                            urgent=not league_event, **options)
         except OperationCancelled:
             check_cancelled(self._stop_event)
         except Exception as error:
