@@ -42,6 +42,39 @@ def manifest_for(video,calibration):
         "selected_sightings":[{"champion":"Warwick","source":"minimap","start_s":1,"end_s":2,"position":[.3,.3]}]}
 
 
+def test_assistant_review_needs_explicit_offline_opt_in_and_keeps_human_provenance_false(setup,tmp_path):
+    video,calibration,profile=setup
+    spec={**profile.spec,"regions":[{"label":"bot","bounds":[0,0,1,1],"lane":"BOTTOM",
+          "verification":{"kind":"assistant_visual_audit","frame_s":1,"independent_human_review":False}}]}
+    save_json(calibration,spec);profile=VisualCalibration(spec,tmp_path)
+    value=manifest_for(video,calibration);value.update(kind="assistant_reviewed_replay_eligibility",
+        reviewer={"kind":"assistant_visual_audit","independent_human_review":False})
+    manifest=save_json(tmp_path/"assistant.json",value)
+    with pytest.raises(ValueError):Eligibility(video,calibration,manifest)
+    assert not profile.verified_regions  # production refuses assistant-only calibration
+    gate=Eligibility(video,calibration,manifest,assistant_reviewed=True)
+    gate.enable_reviewed_regions(profile)
+    assert gate.assistant_reviewed and profile.verified_regions=={0}
+    assert gate.select([observed(in_assigned_lane=True)],1.5,"warwick",profile)
+    assert gate.spec["reviewer"]["independent_human_review"] is False
+    assert not VisualCalibration(spec,tmp_path).verified_regions  # no global activation
+
+
+@pytest.mark.parametrize("claim",[True,None,"false"])
+def test_assistant_benchmark_cannot_claim_independent_human_review(setup,tmp_path,claim):
+    video,calibration,_=setup
+    value=manifest_for(video,calibration);value.update(kind="assistant_reviewed_replay_eligibility",
+        reviewer={"kind":"assistant_visual_audit","independent_human_review":claim})
+    manifest=save_json(tmp_path/"assistant.json",value)
+    with pytest.raises(ValueError):Eligibility(video,calibration,manifest,assistant_reviewed=True)
+
+
+@pytest.mark.parametrize("options",[["--mode","window"],["--eligibility","synthetic"]])
+def test_assistant_review_cli_cannot_activate_captured_or_synthetic_modes(options):
+    import benchmark_league_vision_e2e as cli
+    with pytest.raises(SystemExit):cli.main(["run","--assistant-reviewed",*options])
+
+
 def test_no_verified_eligibility_without_operator_manifest_even_if_detector_says_near(setup):
     video,calibration,profile=setup
     gate=Eligibility(video,calibration)

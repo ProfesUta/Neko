@@ -2,6 +2,8 @@
 
 16 November 2026. This implements stricter evidence checks and a reproducible independent-review workflow on the existing OpenCV pipeline. It does **not** establish independently validated full-match accuracy. Competitive alerts remain disabled; strict3 remains the default. No voice/model assets, Kokoro/session/playback code, League APIs, SVGs, docking or movement code changed.
 
+**Delegated follow-up:** at the user's request, the assistant subsequently reviewed raw footage, saved explicitly assistant-reviewed labels/calibration, and measured real Karma notifications through Kokoro and Windows loopback. See “Delegated assistant review” at the end. The original zero-eligibility results below describe the earlier uncalibrated run. Independent **human** review remains pending; none of the follow-up labels is represented as human-confirmed.
+
 ## Evidence available
 
 The actual local player-view recording is 1920×1080, 60 FPS, 253.867 seconds. Both full reruns analyze 2,539 samples at 10 Hz, with the unchanged cached ten-champion roster: enemies Darius, Warwick, Galio, Ziggs, Karma; allies Vladimir, Ekko, Taliyah, Caitlyn, Yuumi. The player is explicitly UTILITY/Yuumi; no lane is inferred from champion identity.
@@ -136,3 +138,74 @@ Local report and CSV files contain the observed/missing stage pairs and suppress
 ## Remaining limitations
 
 Independent review and location calibration remain the highest-priority next step. The existing small assistant audits cannot establish full-recording recall or a competitive false-warning rate. Darius and overlapping Karma remain known weak cases; templates and thresholds have deliberately not been tuned on the new held-out windows. No hidden positions, pathing or intent are inferred. No new GPU model, continuous gameplay recording or extra frame worker was introduced. Private recording, calibration, labels and diagnostic artifacts remain local/ignored; nothing was committed or uploaded.
+
+## Delegated assistant review
+
+The user requested that the assistant perform the workflow. The assistant inspected all **120 planned raw samples** from practice window-1 and held-out windows 4–6, using unannotated enlarged minimap sheets and full-frame context. An additional five real samples at 0.0–0.4 seconds were inspected as a separate no-visible-enemy control. No detector overlays/results for these windows were consulted until their labels had been saved. Cached roster images were identity references; detections were never automatically accepted as truth.
+
+All files declare `reviewer.kind: assistant_visual_audit` and `independent_human_review: false`. The original human plan and its label paths remain untouched. This is an additional **assistant audit**, not completion of independent human validation. Positions are approximate manually assigned icon centers. Unknown early bot overlaps in the practice window are explicitly excluded; no last-seen position, enemy intent or hidden champion is inferred. All appearance onsets are left unknown rather than claiming that an already-visible champion first appeared at a window boundary.
+
+Private labels and their binding manifest are in `data/league-vision/phase6_4-assistant-review/`. Raw review sheets and scores are in `artifacts/phase6_4/assistant-review/`. The original detector, references, strict3 policy and thresholds were frozen throughout review and scoring.
+
+| Newly reviewed scope | Sampled frames | TP / FP / FN champion-frames | Precision / recall | Missed episodes |
+|---|---:|---:|---:|---:|
+| Practice window-1, overlaps excluded | 30 | 37 / 0 / 46 | 100% / 44.6% | 2 of 4 |
+| Held-out window-4 | 30 | 22 / 0 / 38 | 100% / 36.7% | 1 of 2 |
+| Held-out window-5 | 30 | 58 / 0 / 32 | 100% / 64.4% | 1 of 3 |
+| Held-out window-6 | 30 | 48 / 0 / 10 | 100% / 82.8% | 0 of 2 |
+| Held-out aggregate, 9 s sampled exposure | 90 | **128 / 0 / 80** | **100% / 61.5%** | **2 of 7** |
+| Separate negative control, 0.5 s sampled exposure | 5 | 0 / 0 / 0 | Undefined: no positives/predictions | 0 of 0 |
+
+The 11 reviewed positive episodes comprise seven held-out and four practice episodes, not 303 independent sightings. Held-out Darius was missed on all 60 labeled frames; Galio was detected on 75/88, Karma on 53/60. Warwick and Ziggs had no independently distinguishable positive portraits in these held-out windows, so their recall cannot be estimated here. A fully occluded portrait is not inferred from roster knowledge. The observed incorrect-identity count and false-positive episode count were zero within these small reviewed scopes. This does not establish a full-match or general spoken false-alert rate. No matcher tuning was performed after seeing these results.
+
+### Actual lane evidence
+
+The assistant calibrated only a conservative right-hand **bot-lane segment**, normalized minimap bounds `[0.84, 0.61, 0.115, 0.24]`, based on visible lane geography. `bot-lane-calibration-proof.png` shows the selected segment on a real frame. The copied `audio-calibration.json` tags it `assistant_visual_audit`, not `operator_confirmed`; production `VisualCalibration` rejects this tag. It is admitted only in the explicit offline replay described below.
+
+Yuumi's independent position remains unknown. No Caitlyn marker or inferred attachment coordinate was recorded. Karma is visibly identifiable in the calibrated segment in every sampled frame from 133.0 through 135.9 seconds. That evidence authorizes the selected recorded sighting without claiming measured player-to-enemy distance. The separate window-4 bot segment has no visible enemy. Other locations remain outside this narrowly verified segment; absence of eligibility is not proof that they are irrelevant in every context.
+
+### Actual voice measurements
+
+The existing AdviceWorker, notification dispatcher/policy, persistent native Kokoro worker and shared-mode WASAPI pipeline were used for **“Karma visible in bot lane.”** No fake TTS delay or synthetic eligibility was used. A smoke pair succeeded, followed by **20 measured warm strict/adaptive pairs**, with one excluded warm-up pair, alternating order. Both policies used identical actual recorded pixels, region, roster, voice and output device.
+
+The source clip was released at normal 10 Hz source cadence. All 40 measured trials proposed, accepted and started exactly one notification; 40 completed. No duplicate starts, missing loopback onsets, stale/dropped source frames or warm worker reloads were observed. All measured trials reused the same resident native process. The unrelated non-whitelisted episode in each replay remained unspoken. This selected-positive whitelist test verifies responsiveness and suppression within its scope, **not an unbiased spoken false-warning rate**.
+
+| Measured stage, ms | Strict3 p50 / p95 / p99 / max | Adaptive p50 / p95 / p99 / max | Samples each |
+|---|---:|---:|---:|
+| First raw detection → confirmation | 200.32 / 214.46 / 214.46 / 221.01 | 197.67 / 210.59 / 210.59 / 234.11 | 20 |
+| Confirmation → policy acceptance | 0.082 / 0.229 / 0.229 / 0.268 | 0.070 / 0.274 / 0.274 / 0.323 | 20 |
+| Acceptance → playable PCM | 530.78 / 607.92 / 607.92 / 625.43 | 530.89 / 593.70 / 593.70 / 619.29 | 20 |
+| TTS submission → playable PCM | 529.79 / 607.10 / 607.10 / 624.37 | 530.03 / 592.84 / 592.84 / 618.32 | 20 |
+| Playable PCM → Windows mix onset | 82.48 / 98.34 / 98.34 / 101.56 | 82.32 / 91.76 / 91.76 / 93.79 | 20 |
+| Confirmation → Windows mix onset | **619.41 / 690.38 / 690.38 / 707.81** | **613.32 / 677.11 / 677.11 / 701.96** | 20 |
+| First detected replay-frame acquisition → Windows mix onset | **844.09 / 897.77 / 897.77 / 936.18** | **834.01 / 890.22 / 890.22 / 921.11** | 20 |
+
+The last row uses Mode A's predecoded replay-frame acquisition, **not actual Windows screen capture**. True source appearance was not independently established before this already-visible interval, so appearance→output remains unavailable. Windows loopback measures the render mix, not acoustic speaker arrival. Twenty repeats of one sighting are latency samples, not 20 independent recognition examples. The project's lower-order percentile estimator makes p95 and p99 coincide at n=20. No speedup over other phrases/phases is claimed.
+
+These are **first observed** render-mix onsets with usable timestamps. The separate full-WAV integrity attempts below encountered discontinuity flags; the latency run did not retain complete mix PCM or per-trial discontinuity counts. Consequently these figures do not certify uninterrupted capture or prove that the observed packet contained the earliest physical output sample. They should not be upgraded to exact audible-onset measurements.
+
+Across the 40 measured trials: 1,560 frames; zero stale/dropped frames; detector processing p50/p95/p99/max **18.14 / 44.48 / 53.11 / 61.07 ms**. Process-tree CPU time was 143.48 seconds over 153.48 paced seconds, approximately 93.5% of one core including native CPU synthesis. Sampled summed process-tree RSS peaked at approximately 673.8 MiB; this includes the resident TTS model and is not exclusive private memory. No concurrent inference workload was intentionally launched. Active-game FPS impact, GPU contention and physical audible latency were not measured.
+
+Reproduce with the saved private assistant-review manifest, keeping other output quiet:
+
+```powershell
+$env:CAPRI_LEAGUE_VISION = "0"
+$env:CAPRI_LEAGUE_VISION_APPROVED = "0"
+.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode replay --scenarios verified --assistant-reviewed --eligibility verified --trials 20 --warmups 1 --audio --loopback --calibration data\league-vision\phase6_4-assistant-review\audio-calibration.json --manifest data\league-vision\phase6_4-assistant-review\audio-eligibility.json --output artifacts\phase6_4\assistant-audio\repeat-02
+```
+
+The measured run is `artifacts/phase6_4/assistant-audio/warm-20-pairs/{report.json,trials.csv}`. Source video times and monotonic runtime stages are retained separately. Use a fresh output directory on subsequent runs.
+
+### Focused code changes for honest provenance
+
+Only `benchmark_league_vision_e2e.py`, `benchmarks/league_vision_e2e.py`, `tests/test_league_vision_e2e.py`, and this report changed. The new `--assistant-reviewed` option explicitly admits an `assistant_reviewed_replay_eligibility` manifest with `independent_human_review: false` in recorded-frame replay. It is rejected for captured-window mode and synthetic eligibility. Without the flag, the previous operator-confirmation requirement remains. Live workers never call the benchmark region-admission method and retain their approval checks. No production detector, TTS, voice, GUI or configuration code changed.
+
+Six new regression cases cover default rejection of assistant manifests, explicit scoped admission, rejection of human-review misrepresentation, unchanged production-region validation, and restricted CLI modes. The targeted vision/review suite passed **59 tests** before audio measurement. The complete suite subsequently passed **943 tests in 138.52 seconds**, with no failures. Tests were run separately from the measured audio trials.
+
+### Speech-integrity follow-up and remaining verification
+
+The existing `voice.verify_speech.replay` helper was exercised separately on the same fixed phrase, through native streaming and actual playback. Its source-to-output-callback checks passed: chunks reached the callback in order and source PCM ranges were preserved. Offline Whisper recognized **“Karma visible in bot lane.”** in both generated and submitted PCM. This recognition is supporting evidence, not definitive proof of voice quality or human listening accuracy.
+
+Two attempts to retain a full Windows-mix WAV were **rejected by the existing discontinuity guard**. No invalid loopback WAV is presented as successful. The initial diagnostic invocation also used an unsupported argument name; it was corrected before the two capture attempts. This affects the additional quality diagnostic, not the earlier timing trials. No production audio code or capture-validation guard was modified to make a test pass.
+
+Valid generated/submitted listening files and the diagnostic rejection record are retained under `artifacts/phase6_4/assistant-audio/integrity-retry-01/`: `generated.wav`, `submitted.wav`, `integrity.json`, and `asr-check.json`. There is no accepted `loopback.wav`. A manual listening/acoustic check and a demonstrably continuous full-mix recording remain outstanding. Independent human sighting review likewise remains pending; the original blind-review plan is available unchanged. The delegated assistant audit, calibration, scoped scoring and real replay-to-voice tests have been performed, without labeling assistant judgments as independent human evidence.

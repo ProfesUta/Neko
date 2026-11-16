@@ -42,7 +42,7 @@ STAGES=("T0","T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11")
 
 def verified_clip(eligibility,index=0):
     if not eligibility.spec or eligibility.synthetic:
-        raise ValueError("--scenarios verified requires an operator-confirmed manifest and verified eligibility")
+        raise ValueError("--scenarios verified requires a reviewed manifest and verified eligibility")
     labels=eligibility.spec["selected_sightings"]
     if not 0<=index<len(labels):raise ValueError("Verified sighting index is outside the selected whitelist")
     label=labels[index];start=max(0.,label["start_s"]-.5)
@@ -91,18 +91,23 @@ def attach_loopback(row,observed):
 
 class Eligibility:
     """Verified whitelist is independent of detections and of attached markers."""
-    def __init__(self,video,calibration,manifest=None,synthetic=False):
-        self.synthetic=synthetic;self.spec=None
+    def __init__(self,video,calibration,manifest=None,synthetic=False,*,assistant_reviewed=False):
+        self.synthetic=synthetic;self.spec=None;self.assistant_reviewed=False
         if manifest and not synthetic:
             value=read_json(manifest,2_000_000)
-            if (not isinstance(value,dict) or value.get("kind")!="operator_confirmed_replay_eligibility"
+            assistant=(assistant_reviewed is True and value.get("kind")=="assistant_reviewed_replay_eligibility")
+            if (not isinstance(value,dict) or value.get("kind") not in (
+                    ("operator_confirmed_replay_eligibility","assistant_reviewed_replay_eligibility") if assistant
+                    else ("operator_confirmed_replay_eligibility",))
                     or value.get("video_fingerprint")!=fingerprint(video)
                     or value.get("calibration_sha256")!=file_digest(calibration)
                     or Path(value.get("video","")).resolve()!=local_file(video)):
                 raise ValueError("Eligibility must be manually confirmed for this unchanged local recording/calibration")
             if not isinstance(value.get("selected_sightings"),list) or not 1<=len(value["selected_sightings"])<=1000:
                 raise ValueError("Select a bounded list of visually verified sightings")
-            if not isinstance(value.get("reviewer"),dict) or value["reviewer"].get("kind")!="operator_confirmed":
+            reviewer=value.get("reviewer")
+            if (not isinstance(reviewer,dict) or reviewer.get("kind")!=("assistant_visual_audit" if assistant else "operator_confirmed")
+                    or assistant and reviewer.get("independent_human_review") is not False):
                 raise ValueError("Eligibility requires explicit operator review")
             validate_labels({"kind":"real_player_view","annotation_complete":False,
                 "coverage":{"start_s":0,"end_s":14400},"complete_for":["minimap","viewport"],
@@ -116,6 +121,20 @@ class Eligibility:
                                                      p.get("independent"),p.get("attached")).usable(p["video_s"],1)):
                     raise ValueError("Player locations require independently visible exact-frame evidence, never host inference")
             self.spec=value
+            self.assistant_reviewed=assistant
+
+    def enable_reviewed_regions(self,profile):
+        """Explicit offline benchmark only; never called by the live worker.
+
+        An assistant audit is not an operator/human attestation. Production
+        VisualCalibration continues to reject these region tags by default.
+        """
+        if not self.assistant_reviewed:return
+        for i,region in enumerate(profile.spec.get("regions",[])):
+            evidence=region.get("verification",{})
+            if (evidence.get("kind")=="assistant_visual_audit" and evidence.get("independent_human_review") is False
+                    and finite(evidence.get("frame_s")) and 0<=evidence["frame_s"]<=14400):
+                profile.verified_regions.add(i)
 
     def player_at(self,video_s,runtime_at,epoch):
         from core.league_visual import ReviewedPlayerPosition
@@ -260,6 +279,7 @@ def run_trial(frames,profile,eligibility,scenario,policy,trial,*,audio=False,pro
     from gui.workers import AdviceWorker
     app=QApplication.instance();lock=RLock();epoch=trial+1
     profile=VisualCalibration({**profile.spec,"confirmation_policy":policy},profile.directory)
+    eligibility.enable_reviewed_regions(profile)
     if eligibility.synthetic:
         # Explicit offline benchmark fixture only. The production profile and
         # all live approval flags remain unchanged; this is never real accuracy.

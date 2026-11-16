@@ -75,6 +75,8 @@ def main(argv=None):
     parser.add_argument("--calibration",type=Path,default=Path("data/league-vision/calibration.json"))
     parser.add_argument("--manifest",type=Path,default=Path("data/league-vision/e2e-eligibility.json"))
     parser.add_argument("--eligibility",choices=("verified","synthetic"),default="verified")
+    parser.add_argument("--assistant-reviewed",action="store_true",
+                        help="Explicit offline replay audit only; never independent human validation or live capture")
     parser.add_argument("--verified-index",type=int,default=0,help="Selected operator-whitelist sighting for --scenarios verified")
     parser.add_argument("--mode",choices=("replay","window"),default="replay")
     parser.add_argument("--scenarios",default="warwick,galio,overlap,two-enemies,synthetic,disappear,new-match,already-speaking,interrupt")
@@ -92,6 +94,8 @@ def main(argv=None):
     scenarios=args.scenarios.split(",")
     if not set(scenarios)<=SCENARIOS.keys():parser.error("Unknown scenario; choose "+", ".join(SCENARIOS))
     if args.loopback and not args.audio:parser.error("Loopback requires explicit --audio")
+    if args.assistant_reviewed and (args.mode!="replay" or args.eligibility!="verified" or args.operation=="calibrate"):
+        parser.error("Assistant review is restricted to explicit recorded-frame replay with verified eligibility")
     if args.operation=="calibrate":return calibration_workflow(args.video,args.calibration,args.manifest)
     return run(args,scenarios)
 
@@ -128,9 +132,10 @@ def run(args,scenarios):
         app=QApplication.instance() or QApplication([]);app.setQuitOnLastWindowClosed(False)
         profile=VisualCalibration.load(args.calibration)
         manifest=args.manifest if args.manifest.is_file() else None
-        gate=Eligibility(args.video,args.calibration,manifest,synthetic=args.eligibility=="synthetic")
+        gate=Eligibility(args.video,args.calibration,manifest,synthetic=args.eligibility=="synthetic",assistant_reviewed=args.assistant_reviewed)
         if "verified" in scenarios:SCENARIOS["verified"]=verified_clip(gate,args.verified_index)
-        metadata["eligibility"]="synthetic selected sighting" if gate.synthetic else "operator-confirmed manifest" if gate.spec else "none independently verified"
+        metadata["eligibility"]=("synthetic selected sighting" if gate.synthetic else "assistant-reviewed real footage; not independent human validation"
+                                 if gate.assistant_reviewed else "operator-confirmed manifest" if gate.spec else "none independently verified")
         old_metrics=config.LEAGUE_LATENCY_METRICS_ENABLED
         stack.callback(setattr,config,"LEAGUE_LATENCY_METRICS_ENABLED",old_metrics)
         config.LEAGUE_LATENCY_METRICS_ENABLED=True  # Private benchmark process only; approval flags untouched.
