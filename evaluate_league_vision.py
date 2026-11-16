@@ -32,6 +32,16 @@ def main(argv=None):
     evaluate=sub.add_parser("evaluate")
     evaluate.add_argument("detections");evaluate.add_argument("--labels",required=True);evaluate.add_argument("--output",required=True)
     evaluate.add_argument("--allow-equivalent-calibration",action="store_true",help="Reuse annotations only when reference resolution and region geometry are identical")
+    prepare=sub.add_parser("prepare-review",help="Freeze references and disjoint blind tuning/held-out windows before labeling")
+    prepare.add_argument("--video",required=True);prepare.add_argument("--calibration",required=True)
+    prepare.add_argument("--output",required=True);prepare.add_argument("--windows-per-split",type=int,default=3)
+    prepare.add_argument("--seconds",type=float,default=3.);prepare.add_argument("--seed",type=int,default=64)
+    prepare.add_argument("--exclude-labels",action="append",default=[])
+    review=sub.add_parser("review",help="Blind sampled-frame review including negative and uncertain frames")
+    review.add_argument("--plan",required=True);review.add_argument("--window",required=True)
+    score=sub.add_parser("score-review",help="Evaluate independently completed reviews against their frozen inputs")
+    score.add_argument("detections");score.add_argument("--plan",required=True)
+    score.add_argument("--split",choices=("tuning","heldout"),default="heldout");score.add_argument("--output",required=True)
     sound=sub.add_parser("test-sound",help="Explicit controlled timing sound through existing playback; no live recording")
     sound.add_argument("--samples",type=int,default=1)
     args=parser.parse_args(argv)
@@ -51,6 +61,26 @@ def main(argv=None):
 
 
 def run_operation(args):
+    if args.operation=="prepare-review":
+        from core.league_visual_review import prepare_review
+        plan=prepare_review(args.video,args.calibration,args.output,windows=args.windows_per_split,
+                            seconds=args.seconds,seed=args.seed,exclude_labels=args.exclude_labels)
+        print(json.dumps({"plan":str(Path(args.output).resolve()/"plan.json"),"windows":plan["windows"]},indent=2));return 0
+    if args.operation=="score-review":
+        from core.league_visual_review import score_review
+        from core.league_visual_evaluation import save_json
+        result=score_review(args.plan,args.detections,args.split);save_json(args.output,result)
+        print(json.dumps(result,indent=2));return 0
+    if args.operation=="review":
+        from PySide6.QtWidgets import QApplication
+        from core.league_visual_review import window_labels
+        from gui.league_calibration import LeagueCalibrationDialog
+        plan,window,_=window_labels(args.plan,args.window)
+        app=QApplication.instance() or QApplication([])
+        dialog=LeagueCalibrationDialog(plan["calibration"],plan["video"],
+                                       labels=str(Path(args.plan).resolve().parent/window["labels"]))
+        dialog.begin_blind_review(args.plan,args.window)
+        dialog.show();return app.exec()
     if args.operation=="icons":
         from core.league_icons import prepare_icons
         print(json.dumps(prepare_icons(args.calibration,replace=args.replace),indent=2));return 0

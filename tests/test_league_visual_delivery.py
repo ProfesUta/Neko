@@ -15,12 +15,14 @@ def profile(tmp_path):
         "roster":[{"champion":"Warwick","side":"enemy"},{"champion":"Karma","side":"enemy"},
                   {"champion":"Yuumi","side":"ally"},{"champion":"Caitlyn","side":"ally"}],
         "game_mode":"CLASSIC","map_number":11,"assigned_role":"UTILITY","player_champion":"Yuumi",
-        "alerts_muted":False,"threshold":.85,"alert_cooldown":8},tmp_path)
+        "alerts_muted":False,"threshold":.85,"alert_cooldown":8,
+        "regions":[{"label":"bot","bounds":[0,0,1,1],"lane":"BOTTOM",
+                    "verification":{"kind":"operator_confirmed","frame_s":0}}]},tmp_path)
 
 
 def observation(at=100,**changes):
     return replace(VisualObservation("Warwick","enemy","mid",.97,True,at,"minimap",(.2,.2),(.16,.16,.08,.08),
-                   in_assigned_lane=True,identity_margin=.4),**changes)
+                   assigned_lane="BOTTOM",in_assigned_lane=True,identity_margin=.4),**changes)
 
 
 def test_rejected_proposal_spends_no_cooldown_and_continuous_started_sighting_is_never_repeated(profile):

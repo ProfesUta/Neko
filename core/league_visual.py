@@ -40,9 +40,25 @@ class VisualObservation:
     detected_ns: int = 0
     first_detection_ns: int = 0
     confirmed_ns: int = 0
+    location_evidence: str = "unverified"
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ReviewedPlayerPosition:
+    """One independently reviewed recorded frame, never a host-icon inference."""
+    position: tuple
+    timestamp: float
+    epoch: int
+    independent: bool = False
+    attached: bool = False
+
+    def usable(self, at, epoch):
+        return (self.independent is True and self.attached is False and self.epoch == epoch
+                and valid_position(self.position) and finite(self.timestamp)
+                and abs(at - self.timestamp) <= .00051)
 
 
 class VisualCalibration:
@@ -92,12 +108,18 @@ class VisualCalibration:
         self.viewport_enabled=bool(self.viewport and self.blockers and roster_names
                                    and set(spec.get("viewport_nameplates",{}))==roster_names)
         self.regions = []
+        self.verified_regions = set()
         for item in spec.get("regions",[])[:30]:
             if not isinstance(item,dict) or not isinstance(item.get("label"),str) or not 1<=len(item["label"])<=80:
                 raise ValueError("Invalid named minimap region")
             if item.get("lane") not in (None,"TOP","MIDDLE","BOTTOM"):
                 raise ValueError("A minimap region's lane must be TOP, MIDDLE, BOTTOM or null")
             self.regions.append((item["label"],bounds(item.get("bounds")),item.get("lane")))
+            verification=item.get("verification",{})
+            if not isinstance(verification,dict):raise ValueError("Invalid lane-region verification")
+            if (verification.get("kind")=="operator_confirmed" and finite(verification.get("frame_s"))
+                    and 0<=verification["frame_s"]<=14400):
+                self.verified_regions.add(len(self.regions)-1)
 
     @classmethod
     def load(cls,path):
@@ -125,11 +147,35 @@ class VisualCalibration:
                 for name,(x,y,rw,rh) in self.rois().items()}
 
     def locate(self,position,lane):
-        matches=[(name,role) for name,(x,y,w,h),role in self.regions if x<=position[0]<=x+w and y<=position[1]<=y+h]
-        if len(matches)!=1:
+        matches=[(i,name,role) for i,(name,(x,y,w,h),role) in enumerate(self.regions) if x<=position[0]<=x+w and y<=position[1]<=y+h]
+        if len(matches)!=1 or matches[0][0] not in self.verified_regions:
             return "the minimap",None
-        name,role=matches[0]
+        _,name,role=matches[0]
         return name,(role==lane.assigned_lane) if role in ("TOP","MIDDLE","BOTTOM") and lane.assigned_lane else None
+
+    def region_evidence(self, position, assigned_lane):
+        matches=[i for i,(_, (x,y,w,h),_) in enumerate(self.regions)
+                 if x<=position[0]<=x+w and y<=position[1]<=y+h]
+        if len(matches)!=1 or matches[0] not in self.verified_regions:
+            return "insufficient location evidence"
+        role=self.regions[matches[0]][2]
+        if role is None or assigned_lane is None:return "insufficient location evidence"
+        return "verified assigned lane region" if role==assigned_lane else "verified other lane region"
+
+    def relevance(self, item):
+        """Revalidate geometry, not an asserted in_assigned_lane flag."""
+        if not valid_position(item.position):return "insufficient location evidence",False
+        if item.source=="viewport" and self.viewport_enabled:
+            return "calibrated visible viewport",True
+        if item.source!="minimap":return "insufficient location evidence",False
+        region=self.region_evidence(item.position,item.assigned_lane)
+        near=(item.near_player is True and finite(item.distance) and 0<=item.distance<=self.radius
+              and item.player_position_source in ("verified own minimap icon","independently reviewed recording frame"))
+        if near:return "verified player proximity",True
+        if region=="verified assigned lane region" and item.in_assigned_lane is True:return region,True
+        if region=="verified other lane region":return region,False
+        if item.player_position_source=="unverified":return "unknown player position",False
+        return "insufficient location evidence",False
 
     def offline_lane(self):
         role=self.spec.get("assigned_role",self.fallback)
@@ -303,7 +349,7 @@ class LeagueVisualPipeline:
                 raise ValueError("Use a textured scoreboard/occlusion reference")
             self.blockers.append((f"blocker:{index}",image))
 
-    def process(self,regions,lane,at):
+    def process(self,regions,lane,at,*,player_evidence=None):
         import cv2
         self.raw_observations=()
         if not lane.supported:
@@ -330,6 +376,10 @@ class LeagueVisualPipeline:
         own=(self.minimap.match(crop,lane.player_champion,gray)
              if lane.player_champion in self.allies and lane.player_champion!="Yuumi" else None)
         if own and not valid_position(own.get("minimap_position")):own=None
+        position_source="verified own minimap icon" if own else "unverified"
+        if isinstance(player_evidence,ReviewedPlayerPosition) and player_evidence.usable(at,lane.epoch):
+            own={"minimap_position":player_evidence.position}
+            position_source="independently reviewed recording frame"
         observations=[]
         for name in self.enemies:
             found=self.minimap.match(crop,name,gray)
@@ -342,7 +392,8 @@ class LeagueVisualPipeline:
             observations.append(VisualObservation(name,"enemy",location,found["template_similarity"],True,at,"minimap",
                 position,(x/self.minimap.width,y/self.minimap.height,w/self.minimap.width,h/self.minimap.height),
                 lane.role,lane.assigned_lane,in_lane,distance<=self.profile.radius if distance is not None else None,distance,
-                identity_margin=found["ambiguity_margin"],player_position_source="verified own minimap icon" if own else "unverified"))
+                identity_margin=found["ambiguity_margin"],player_position_source=position_source,
+                location_evidence=self.profile.region_evidence(position,lane.assigned_lane)))
         if "viewport" in regions:
             observations.extend(self.viewport.detect(regions["viewport"],self.enemies,at,lane))
         # Two identities occupying the same icon are not two known champions.
@@ -391,9 +442,7 @@ class VisualAlertDispatcher:
         self.current.clear();self.episodes.clear();self.spoken.clear();self.recent_spoken.clear()
 
     def eligible(self,item):
-        near=(item.near_player is True and finite(item.distance) and item.distance>=0
-              and item.player_position_source=="verified own minimap icon")
-        return near or item.in_assigned_lane is True or item.source=="viewport" and self.profile.viewport_enabled
+        return self.profile.relevance(item)[1]
 
     def _drop(self,key,now=None):
         entry=self.states.get(key)

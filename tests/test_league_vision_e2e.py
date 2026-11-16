@@ -24,7 +24,8 @@ def setup(tmp_path):
         "roster":[{"champion":"Warwick","side":"enemy"},{"champion":"Yuumi","side":"ally"}],
         "templates":{"Warwick":"Warwick.png","Yuumi":"Yuumi.png"},"fps":10,"threshold":.9,"margin":.08,
         "game_mode":"CLASSIC","map_number":11,"assigned_role":"UTILITY","player_champion":"Yuumi",
-        "alerts_muted":False}
+        "alerts_muted":False,"regions":[{"label":"bot","bounds":[0,0,1,1],"lane":"BOTTOM",
+            "verification":{"kind":"operator_confirmed","frame_s":0}}]}
     calibration=tmp_path/"calibration.json";save_json(calibration,spec)
     video=tmp_path/"local.mp4";video.write_bytes(b"fingerprint-only fixture")
     return video,calibration,VisualCalibration(spec,tmp_path)
@@ -32,7 +33,7 @@ def setup(tmp_path):
 
 def observed(**changes):
     return replace(VisualObservation("Warwick","enemy","unknown",.98,True,100,"minimap",(.3,.3),(.2,.2,.1,.1),
-        identity_margin=.4),**changes)
+        assigned_lane="BOTTOM",identity_margin=.4),**changes)
 
 
 def manifest_for(video,calibration):

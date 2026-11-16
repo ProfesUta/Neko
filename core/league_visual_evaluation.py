@@ -166,6 +166,8 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
     analyzed=0;last_index=-1;peak_rss=None;last_time=-1
     pixels=times=None
     calibration_digest=file_digest(calibration)
+    from core.league_visual_review import binding
+    reference_digests=binding(video,calibration)["reference_sha256"]
     video_stat=video.stat()
     partial=output/"frames.partial.jsonl"
     try:
@@ -177,6 +179,7 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
         metrics.finish("template_initialization",started)
         dispatcher=VisualAlertDispatcher(profile)
         dispatcher.muted=False  # Recorded proposals only. Never sent to live voice policy.
+        location_evidence=Counter();eligible_frames=0
         actual_fps=min(10.,profile.fps,fps)
         step=max(1,round(fps/actual_fps))
         episodes=CandidateEpisodes(actual_fps)
@@ -216,8 +219,12 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
                 started=time.perf_counter_ns()
                 proposals=dispatcher.update(observations,lane.epoch,now=at)
                 metrics.finish("confirmed_detection_to_notification_proposal",started)
+                for observation in observations:
+                    reason,eligible=profile.relevance(observation)
+                    location_evidence[reason]+=1;eligible_frames+=int(eligible)
                 items=[o.to_dict() for o in observations]
-                stream.write(json.dumps({"frame":index,"timestamp":at,"observations":items},allow_nan=False)+"\n")
+                stream.write(json.dumps({"frame":index,"timestamp":at,"observations":items,
+                    "raw_observations":[o.to_dict() for o in pipeline.raw_observations]},allow_nan=False)+"\n")
                 episodes.update(items,at,index)
                 if debug and analyzed<500:
                     folder=output/"debug";folder.mkdir(exist_ok=True)
@@ -234,6 +241,7 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
         report={"schema":1,"kind":"unverified","video":str(video),"calibration":str(calibration),
                 "reference_setup":reference_setup,"reference_setup_ms":reference_setup_ms,
                 "calibration_sha256":calibration_digest,"video_fingerprint":{"size":video_stat.st_size,"mtime_ns":video_stat.st_mtime_ns},
+                "reference_sha256":reference_digests,
                 "timestamp_method":"Decoder presentation timestamps when available; nominal frame time fallback",
                 "duration_s":total/fps,"source_fps":fps,"analyzed_fps":fps/step,"analyzed_frames":analyzed,
                 "intentionally_unsampled_frames":int(total)-analyzed,"dropped_frames":0,
@@ -242,6 +250,9 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
                 "cpu_seconds":cpu,"wall_seconds":wall,"cpu_percent_one_core":100*cpu/wall if wall else None,
                 "sampled_peak_process_rss_bytes":peak_rss,"gpu":"CPU OpenCV; GPU utilization not measured",
                 "accuracy":None,"accuracy_status":"Human ground truth required; candidates are not verified sightings",
+                "location_relevance":{"confirmed_observation_frames":dict(location_evidence),
+                    "eligible_observation_frames":eligible_frames,"notification_lifecycle":dict(dispatcher.counts),
+                    "note":"Detector observations and proposal attempts, not independently verified sightings or spoken alerts"},
                 "notification_measurement":"Proposal construction only; no playback or physical audio measurement"}
         if pixels is not None:
             pixels.flush();times.flush()
@@ -265,7 +276,7 @@ def analyze_recording(video, calibration, output, cancellation=None, admit=None,
             cv2.setNumThreads(old_threads)
 
 
-def analyze_minimap_cache(source_report, calibration, output, cancellation=None, *, include_raw=False):
+def analyze_minimap_cache(source_report, calibration, output, cancellation=None, *, include_raw=True):
     """Repeat actual CV on identical lossless recorded pixels; excludes capture/decode."""
     import cv2
     import numpy as np
@@ -389,9 +400,14 @@ def simulate_visual_notifications(detections,labels_paths=(),*,baseline_factory=
             "simulated_tts_delay_s":tts_delay,"scenarios":{}}
     for legacy in ([True,False] if baseline_factory else [False]):
         for controlled in (False,True):
-            clock=[0.];d=VisualAlertDispatcher(profile);d.muted=False
+            case_profile=profile
+            if controlled:
+                case_profile=VisualCalibration({**profile.spec,"regions":[{"label":"controlled test region",
+                    "bounds":[0,0,1,1],"lane":profile.offline_lane().assigned_lane}]},profile.directory)
+                case_profile.verified_regions.add(0)  # Explicit synthetic eligibility, never human evidence.
+            clock=[0.];d=VisualAlertDispatcher(case_profile);d.muted=False
             policy=LeagueVoicePolicy(clock=lambda:clock[0],on_status=lambda a,s:d.lifecycle(a,s,clock[0]))
-            if legacy:d,policy=baseline_factory(profile,clock)
+            if legacy:d,policy=baseline_factory(case_profile,clock)
             active=None;started_alerts=[];counts=Counter();stage_delays=LeagueMetrics(True)
             with local_file(Path(detections).parent/report["frames"]).open(encoding="utf-8") as source:
                 for line in source:
@@ -464,6 +480,12 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
     """Frame-level scoring within explicit exhaustive coverage, positions matched before identity."""
     report=read_json(detections_path,20_000_000)
     labels=validate_labels(read_json(labels_path,20_000_000))
+    if labels.get("review_plan_sha256"):
+        # Bound independent review files are checked by score-review against the
+        # original plan, including reference hashes. Plain evaluation still
+        # checks their immutable recording/profile bindings below.
+        if labels.get("calibration_sha256") and file_digest(labels["calibration"])!=labels["calibration_sha256"]:
+            raise ValueError("Calibration changed after blind review")
     if local_file(labels["video"])!=local_file(report["video"]):
         raise ValueError("Labels and detections refer to different recordings")
     if local_file(labels["calibration"])!=local_file(report["calibration"]):
@@ -489,7 +511,8 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
     if not labels["annotation_complete"] or not labels["complete_for"] or labels["coverage"]["end_s"]<=labels["coverage"]["start_s"]:
         result.update(accuracy=None,status="Confirm/reject reviews alone do not measure recall. Label missed positives and declare exhaustive coverage.")
         return result
-    tp=fp=fn=identity_total=identity_correct=proximity_total=proximity_correct=frames=0
+    tp=fp=fn=identity_total=identity_correct=proximity_total=proximity_correct=frames=scorable_frames=0
+    scored_episodes=set()
     first_detections={};first_raw={};false_episodes={};false_count=0;latency=LeagueMetrics(True)
     per_champion=defaultdict(Counter)
     start,end=labels["coverage"]["start_s"],labels["coverage"]["end_s"]
@@ -516,12 +539,15 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
             if window is None:continue
             frames+=1
             ignored=[r for r in labels.get("ignored_regions",[]) if r["start_s"]-.00051<=at<=r["end_s"]+.00051]
+            if any(not any(r["source"]==source and r["bounds"]==[0,0,1,1] for r in ignored)
+                   for source in labels["complete_for"]):scorable_frames+=1
             def excluded(item):
                 px,py=item["position"]
                 return any(r["source"]==item["source"] and r["bounds"][0]<=px<=r["bounds"][0]+r["bounds"][2]
                            and r["bounds"][1]<=py<=r["bounds"][1]+r["bounds"][3] for r in ignored)
             expected=[(i,l) for i,l in enumerate(labels["labels"]) if l["source"] in labels["complete_for"]
                       and l["start_s"]-.00051<=at<=l["end_s"]+.00051 and not excluded(l)]
+            scored_episodes.update(episode(i,l) for i,l in expected)
             for i,label in expected:
                 key=episode(i,label)
                 if key in first_raw:continue
@@ -566,14 +592,16 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
                     false_count+=1;per_champion[item["champion"]]["false_episodes"]+=1
                 false_episodes[key]=at
     if frames==0:raise ValueError("No analyzed frames within labelled coverage")
-    duration=frames/report["analyzed_fps"]
+    duration=scorable_frames/report["analyzed_fps"]
     detail={name:{"true_positive_frames":c["tp"],"false_positive_frames":c["fp"],"missed_positive_frames":c["fn"],
                   "labelled_positive_frames":c["tp"]+c["fn"],"precision":c["tp"]/(c["tp"]+c["fp"]) if c["tp"]+c["fp"] else None,
                   "recall":c["tp"]/(c["tp"]+c["fn"]) if c["tp"]+c["fn"] else None,
                   "false_positive_episodes":c["false_episodes"]} for name,c in per_champion.items()}
+    labelled_episodes=scored_episodes
     accuracy={"true_positive_frames":tp,"false_positive_frames":fp,"false_negative_frames":fn,"evaluated_frames":frames,
               "recall":tp/(tp+fn) if tp+fn else None,"precision":tp/(tp+fp) if tp+fp else None,
-              "false_positive_episodes":false_count,"false_positives_per_minute":false_count*60/duration,
+              "false_positive_episodes":false_count,"false_positives_per_minute":false_count*60/duration if duration else None,
+              "scorable_frames":scorable_frames,"wholly_excluded_frames":frames-scorable_frames,
               "evaluated_source_seconds":duration,"reviewed_intervals":intervals,"reviewed_champions":declared or "all",
               "false_positive_rate_kind":"Candidate sighting episodes, not spoken alerts; excluded regions are not scored",
               "per_champion":detail,
@@ -581,6 +609,8 @@ def evaluate_labels(detections_path, labels_path, *, allow_equivalent_calibratio
               "champion_identity_accuracy":identity_correct/identity_total if identity_total else None,
               "identity_associations":identity_total,"proximity_accuracy":proximity_correct/proximity_total if proximity_total else None,
               "proximity_comparisons":proximity_total,"detected_label_intervals":len(first_detections),
+              "labelled_episodes":len(labelled_episodes),"missed_episodes":len(labelled_episodes-set(first_detections)),
+              "incorrect_identity_frames":identity_total-identity_correct,
               "latency":latency.report(),"known_onset_episodes":len(onsets),
               "latency_note":"Only explicitly known onsets contribute; left-censored sightings cannot establish appearance latency"}
     result.update(accuracy=accuracy,status="Scored only within declared review scope; consult annotation_provenance. Not independent certification.")

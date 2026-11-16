@@ -142,6 +142,7 @@ class LeagueCalibrationDialog(QDialog):
         self.setWindowTitle("Capri — recorded League calibration and sighting review")
         self.resize(1120,850)
         self.path=Path(calibration).expanduser().resolve();self.league=league
+        self.blind_review=None
         self.worker=None;self.closing=False;self.frame=None;self.loaded_at=None;self.loaded_video=None;self.report=None;self.candidates=[]
         self.label_path=Path(labels).resolve() if labels else self.path.parent/"labels.json"
         self.manifest=new_labels(video,self.path)
@@ -155,14 +156,16 @@ class LeagueCalibrationDialog(QDialog):
         root.addWidget(QLabel("Offline player-view review. Similarity scores are not probabilities. Live competitive alerts remain disabled pending Riot approval."))
         row=QHBoxLayout();self.video=QLineEdit(video);row.addWidget(self.video)
         self.add_button(row,"Browse video",self.browse_video);root.addLayout(row)
-        row=QHBoxLayout();self.at=QDoubleSpinBox();self.at.setRange(0,14400);self.at.setDecimals(3);self.at.setSuffix(" s")
+        row=QHBoxLayout();self.at=QDoubleSpinBox();self.at.setRange(0,14400);self.at.setDecimals(6);self.at.setSuffix(" s")
         row.addWidget(self.at);self.add_button(row,"Load frame",self.load_frame)
         self.mode=QComboBox();self.mode.addItems(["Minimap ROI","Viewport ROI","Lane region","HUD exclusion","Champion minimap icon","Champion nameplate","Scoreboard blocker"])
         row.addWidget(self.mode);self.name=QLineEdit();self.name.setPlaceholderText("Champion or region name (exact roster spelling)");row.addWidget(self.name)
         self.region_lane=QComboBox();self.region_lane.addItems(["No lane","TOP","MIDDLE","BOTTOM"]);row.addWidget(self.region_lane)
         root.addLayout(row)
+        self.region_verified=QCheckBox("I verified the drawn lane region on this recorded frame")
+        root.addWidget(self.region_verified)
         splitter=QSplitter(Qt.Orientation.Vertical);self.canvas=FrameCanvas();splitter.addWidget(self.canvas)
-        tabs=QTabWidget();splitter.addWidget(tabs);root.addWidget(splitter,1)
+        tabs=QTabWidget();self.tabs=tabs;splitter.addWidget(tabs);root.addWidget(splitter,1)
         self.canvas.rectangle_selected.connect(self.rectangle_selected);self.canvas.point_selected.connect(self.point_selected)
         setup=QWidget();form=QVBoxLayout(setup)
         form.addWidget(QLabel("Enter the known ally/enemy roster. Missing champion icons are fetched from Riot and cached automatically when analysis starts.\nManual icon cropping is optional. Viewport matching separately needs nameplate references and a scoreboard blocker."))
@@ -186,7 +189,7 @@ class LeagueCalibrationDialog(QDialog):
         fields=QFormLayout();self.label_champ=QLineEdit();fields.addRow("Champion",self.label_champ)
         self.source=QComboBox();self.source.addItems(["minimap","viewport"]);fields.addRow("Source",self.source)
         self.start=QDoubleSpinBox();self.end=QDoubleSpinBox()
-        for box in (self.start,self.end):box.setRange(0,14400);box.setDecimals(3)
+        for box in (self.start,self.end):box.setRange(0,14400);box.setDecimals(6)
         row=QHBoxLayout();row.addWidget(self.start);row.addWidget(self.end);fields.addRow("Visible start / end seconds",row)
         self.x=QDoubleSpinBox();self.y=QDoubleSpinBox()
         for box in (self.x,self.y):box.setRange(0,1);box.setDecimals(5)
@@ -194,9 +197,12 @@ class LeagueCalibrationDialog(QDialog):
         self.near=QComboBox();self.near.addItems(["unknown","yes","no"]);fields.addRow("Near visible player (manually verified)",self.near)
         self.onset=QCheckBox("First appearance time verified against preceding absence")
         fields.addRow(self.onset)
+        self.player_independent=QCheckBox("This point is the independently visible player, not an attached champion's host")
+        fields.addRow(self.player_independent)
+        self.add_button(fields,"Record independent player point on this frame",self.record_player_point)
         self.kind=QComboBox();self.kind.addItems(["unverified","real_player_view","synthetic"]);fields.addRow("Recording kind",self.kind)
         self.cover_start=QDoubleSpinBox();self.cover_end=QDoubleSpinBox()
-        for box in (self.cover_start,self.cover_end):box.setRange(0,14400);box.setDecimals(3)
+        for box in (self.cover_start,self.cover_end):box.setRange(0,14400);box.setDecimals(6)
         row=QHBoxLayout();row.addWidget(self.cover_start);row.addWidget(self.cover_end);fields.addRow("Reviewed coverage start / end",row)
         self.complete=QCheckBox("All visible sightings AND absences in coverage are labelled (including missed detections)")
         self.complete_sources=QComboBox();self.complete_sources.addItems(["minimap","viewport","minimap + viewport"])
@@ -228,6 +234,7 @@ class LeagueCalibrationDialog(QDialog):
         if path:self.video.setText(path)
 
     def launch(self,operation,arguments):
+        if self.blind_review and operation!="frame":self.error("Blind review cannot display detector predictions or change references");return
         if self.worker is not None:self.error("A recording task is already running.");return
         self.worker=RecordingTask(operation,arguments,self.league)
         if operation=="icons":self.editor.setReadOnly(True)
@@ -255,17 +262,23 @@ class LeagueCalibrationDialog(QDialog):
         elif result["operation"]=="detect":
             self.load_detections(result["path"]);self.message.setText(f'Analysis complete: {result["path"]}. Review is optional for use; exhaustive labels are needed only to measure accuracy.')
         else:
-            self.frame=result["frame"];self.canvas.set_image(result["image"])
+            self.frame=result["frame"];self.review_image=result["image"]
+            if self.blind_review:self.render_review_image()
+            else:self.canvas.set_image(result["image"])
             self.loaded_at=result["at"]
             self.loaded_video=result["video"]
-            self.at.setValue(result["at"]);self.cover_end.setValue(result["duration"])
+            self.at.setValue(result["at"])
+            if not self.blind_review:self.cover_end.setValue(result["duration"])
             self.start.setValue(result["at"]);self.end.setValue(result["at"])
             self.message.setText(f'Loaded frame at {result["at"]:.3f}s. Drag the selected ROI or reference; click an icon to label its center.')
+            if self.blind_review:
+                state=self.blind_review
+                self.message.setText(f'Blind {state["window"]["split"]} review: frame {state["index"]+1}/{len(state["window"]["samples_s"])} at {result["at"]:.3f}s. Label ALL visible enemies, or explicitly mark absence / uncertainty.')
 
     @Slot()
     def task_finished(self):
         worker,self.worker=self.worker,None
-        self.editor.setReadOnly(False)
+        self.editor.setReadOnly(bool(self.blind_review))
         if worker:worker.deleteLater()
         if self.closing:self.close()
 
@@ -277,6 +290,7 @@ class LeagueCalibrationDialog(QDialog):
 
     @Slot(object)
     def rectangle_selected(self,box):
+        if self.blind_review:self.error("Blind review keeps calibration frozen; click an icon center to label it");return
         if self.worker is not None and self.worker.operation=="icons":
             self.error("Wait for icon preparation before changing calibration");return
         try:
@@ -292,7 +306,11 @@ class LeagueCalibrationDialog(QDialog):
                 from core.league_replay import bounds
                 bounds(local)
                 if not name:raise ValueError("Name the region and set its lane in JSON (TOP, MIDDLE, BOTTOM)")
-                spec.setdefault("regions",[]).append({"label":name,"bounds":local,"lane":None if self.region_lane.currentIndex()==0 else self.region_lane.currentText()})
+                region={"label":name,"bounds":local,"lane":None if self.region_lane.currentIndex()==0 else self.region_lane.currentText()}
+                if self.region_verified.isChecked():
+                    if self.loaded_at is None:raise ValueError("Load and inspect the recorded frame before verifying a region")
+                    region["verification"]={"kind":"operator_confirmed","frame_s":self.loaded_at}
+                spec.setdefault("regions",[]).append(region)
             else:
                 import cv2
                 crop=self.frame[round(box[1]*h):round((box[1]+box[3])*h),round(box[0]*w):round((box[0]+box[2])*w)]
@@ -314,6 +332,8 @@ class LeagueCalibrationDialog(QDialog):
     @Slot(object)
     def point_selected(self,point):
         try:
+            if self.blind_review and self.review_zoom.isChecked():
+                self.x.setValue(point[0]);self.y.setValue(point[1]);return
             roi=self.read_spec().get("minimap" if self.source.currentText()=="minimap" else "viewport")
             if roi is None:raise ValueError("Calibrate the selected source region first")
             x,y=(point[0]-roi[0])/roi[2],(point[1]-roi[1])/roi[3]
@@ -361,6 +381,7 @@ class LeagueCalibrationDialog(QDialog):
             except Exception as error:self.error(error)
 
     def load_detections(self,path):
+        if self.blind_review:raise ValueError("Detector predictions are hidden during blind review")
         report=read_json(path,20_000_000)
         if not isinstance(report.get("candidates"),list):raise ValueError("Not a Phase 6 detections file")
         self.path=local_file(report["calibration"]);self.spec=read_json(self.path,65536)
@@ -420,11 +441,17 @@ class LeagueCalibrationDialog(QDialog):
     def add_label(self):self._append_label()
 
     def _append_label(self,candidate_id=None):
+        if self.blind_review and (candidate_id or not self.review_frame_loaded()):
+            self.error("Load the planned blind-review frame before labeling");return
         label={"start_s":self.start.value(),"end_s":self.end.value(),"champion":self.label_champ.text().strip(),
                "source":self.source.currentText(),"position":[self.x.value(),self.y.value()],
                "onset_known":self.onset.isChecked(),
                "near_player":{"unknown":None,"yes":True,"no":False}[self.near.currentText()]}
         if candidate_id:label["candidate_id"]=candidate_id
+        if self.blind_review:
+            at=self.blind_review["window"]["samples_s"][self.blind_review["index"]]
+            if not self.episode.text().strip():self.error("Set a stable episode ID; use the same ID until this champion disappears");return
+            label.update(start_s=at,end_s=at,episode_id=self.episode.text().strip())
         if not label["champion"] or label["start_s"]>label["end_s"]:self.error("Set champion and a valid visible interval");return
         if label not in self.manifest["labels"]:self.manifest["labels"].append(label)
         self.refresh_labels();self.message.setText("Added a human label. Save labels JSON; add any missed visible sightings too.")
@@ -463,7 +490,96 @@ class LeagueCalibrationDialog(QDialog):
         value.update(video=str(Path(self.video.text()).resolve()),calibration=str(self.path),kind=self.kind.currentText(),
                      coverage=coverage,
                      annotation_complete=self.complete.isChecked(),complete_for=self.complete_sources.currentText().split(" + "))
+        if self.blind_review:
+            value["annotation_complete"]=False
+            value["reviewer"]={"kind":"unverified","independent_human_review":False}
         return validate_labels(value)
+
+    def record_player_point(self):
+        if (not self.player_independent.isChecked() or self.loaded_at is None or self.source.currentText()!="minimap"):
+            self.error("Inspect the independently visible player on a minimap frame and explicitly confirm; a host face is insufficient");return
+        if self.blind_review and not self.review_frame_loaded():return
+        at=self.loaded_at
+        if self.blind_review:at=self.blind_review["window"]["samples_s"][self.blind_review["index"]]
+        points=self.manifest.setdefault("player_locations",[])
+        points[:]=[p for p in points if p["video_s"]!=at]
+        points.append({"video_s":at,"position":[self.x.value(),self.y.value()],"independent":True,"attached":False})
+        self.message.setText("Stored only this recorded frame's player point. No interpolation or attachment inference.")
+
+    def begin_blind_review(self,plan_path,window_id):
+        from core.league_visual_review import window_labels
+        plan,window,value=window_labels(plan_path,window_id)
+        if self.label_path.is_file():
+            if self.manifest.get("review_plan_sha256")!=value["review_plan_sha256"]:
+                raise ValueError("Existing labels belong to another review plan")
+        else:self.manifest=value
+        self.blind_review={"path":str(Path(plan_path).resolve()),"window":window,"index":0}
+        self.tabs.setCurrentIndex(2)
+        for index in (0,1):self.tabs.setTabEnabled(index,False)
+        self.video.setReadOnly(True);self.editor.setReadOnly(True);self.mode.setEnabled(False)
+        self.region_verified.setEnabled(False);self.cover_start.setValue(value["coverage"]["start_s"])
+        self.cover_end.setValue(value["coverage"]["end_s"])
+        for control in (self.cover_start,self.cover_end,self.kind,self.complete,self.complete_sources):control.setEnabled(False)
+        self.kind.setCurrentText("real_player_view");self.complete_sources.setCurrentText("minimap")
+        self.source.setCurrentText("minimap");self.source.setEnabled(False)
+        self.complete.setChecked(False);self.onset.setChecked(False)
+        self.episode=QLineEdit();self.episode.setPlaceholderText("Stable episode ID for this continuous sighting; change after disappearance")
+        self.layout().insertWidget(2,self.episode)
+        self.review_zoom=QCheckBox("Enlarge minimap (no detection overlays)");self.review_zoom.setChecked(True)
+        self.review_zoom.toggled.connect(self.render_review_image);self.layout().insertWidget(2,self.review_zoom)
+        controls=QHBoxLayout()
+        self.add_button(controls,"Previous frame",lambda:self.review_step(-1))
+        self.add_button(controls,"Next frame",lambda:self.review_step(1))
+        self.add_button(controls,"Uncertain minimap frame: exclude",self.exclude_review_frame)
+        self.add_button(controls,"All visible icons labelled / none visible; mark and next",self.mark_review_frame)
+        self.layout().insertLayout(3,controls)
+        self.human_review=QCheckBox("I independently inspected every planned frame, including absences; predictions were hidden")
+        self.layout().insertWidget(4,self.human_review)
+        button=QPushButton("Finalize independent review")
+        button.clicked.connect(self.finish_review);self.layout().insertWidget(5,button)
+        self.refresh_labels();self.review_step(0)
+
+    def render_review_image(self):
+        image=getattr(self,"review_image",None)
+        if image is None:return
+        if self.review_zoom.isChecked():
+            x,y,w,h=self.spec["minimap"];iw,ih=image.width(),image.height()
+            image=image.copy(round(x*iw),round(y*ih),round((x+w)*iw)-round(x*iw),round((y+h)*ih)-round(y*ih))
+        self.canvas.set_image(image)
+
+    def review_frame_loaded(self):
+        return (self.loaded_at is not None and self.loaded_video==str(Path(self.video.text()).resolve())
+                and abs(self.loaded_at-self.blind_review["window"]["samples_s"][self.blind_review["index"]])<=.02)
+
+    def review_step(self,step):
+        if self.worker is not None:self.error("Wait for the frame to load");return
+        state=self.blind_review;state["index"]=max(0,min(len(state["window"]["samples_s"])-1,state["index"]+step))
+        at=state["window"]["samples_s"][state["index"]]
+        self.at.setValue(at);self.start.setValue(at);self.end.setValue(at)
+        self.onset.setChecked(False);self.player_independent.setChecked(False);self.canvas.detections=[]
+        self.load_frame()
+
+    def exclude_review_frame(self):
+        if not self.review_frame_loaded():self.error("Load the planned frame first");return
+        at=self.blind_review["window"]["samples_s"][self.blind_review["index"]]
+        self.manifest.setdefault("ignored_regions",[]).append({"source":"minimap","start_s":at,"end_s":at,"bounds":[0,0,1,1]})
+        self.mark_review_frame()
+
+    def mark_review_frame(self):
+        if not self.review_frame_loaded():self.error("Load the planned frame first");return
+        at=self.blind_review["window"]["samples_s"][self.blind_review["index"]]
+        reviewed=self.manifest.setdefault("reviewed_samples_s",[])
+        if at not in reviewed:reviewed.append(at)
+        self.save_labels();self.review_step(1)
+
+    def finish_review(self):
+        try:
+            from core.league_visual_review import finalize_review
+            value=finalize_review(self.labels_value(),self.blind_review["path"],self.blind_review["window"]["id"],
+                                  human_confirmed=self.human_review.isChecked())
+            save_json(self.label_path,value);self.manifest=value
+            self.message.setText(f"Saved independent review: {self.label_path}. Score this split using score-review.")
+        except (ValueError,OSError) as error:self.error(error)
 
     def save_labels(self):
         try:

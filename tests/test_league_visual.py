@@ -30,7 +30,8 @@ def visual_fixture(tmp_path):
                     {"champion":"Ahri","side":"ally","position":"MIDDLE"}],
           "templates":{name:f"{name}.png" for name in images},"threshold":.9,"margin":.08,
           "fps":10,"game_mode":"CLASSIC","map_number":11,"assigned_role":"MIDDLE","player_champion":"Ahri",
-          "alerts_muted":False,"regions":[{"label":"mid lane region","bounds":[0,0,.5,.5],"lane":"MIDDLE"}]}
+          "alerts_muted":False,"regions":[{"label":"mid lane region","bounds":[0,0,.5,.5],"lane":"MIDDLE",
+              "verification":{"kind":"operator_confirmed","frame_s":0}}]}
     def frame(target=True):
         output=np.zeros((128,128,3),np.uint8);output[90:106,90:106]=images["Ahri"]
         if target:output[20:36,20:36]=images["Lee Sin"]
@@ -242,7 +243,7 @@ def test_notifications_are_optional_fresh_deduplicated_and_lower_priority(visual
     from core.league_voice import LeagueVoicePolicy,LeagueAnnouncement
     spec,_,_,root=visual_fixture
     profile=VisualCalibration(spec,root);dispatcher=VisualAlertDispatcher(profile)
-    item=VisualObservation("Lee Sin","enemy","mid lane region",.99,True,10,"minimap",(.2,.2),(.1,.1,.1,.1),in_assigned_lane=True)
+    item=VisualObservation("Lee Sin","enemy","mid lane region",.99,True,10,"minimap",(.2,.2),(.1,.1,.1,.1),assigned_lane="MIDDLE",in_assigned_lane=True)
     assert dispatcher.update([item],1,now=10,live=True,approved=False)==()
     proposal=dispatcher.update([item],1,now=10,live=True,approved=True)[0]
     assert proposal.priority==0 and dispatcher.is_current(proposal,10)

@@ -107,7 +107,21 @@ class Eligibility:
             validate_labels({"kind":"real_player_view","annotation_complete":False,
                 "coverage":{"start_s":0,"end_s":14400},"complete_for":["minimap","viewport"],
                 "labels":value["selected_sightings"]})
+            from core.league_visual import ReviewedPlayerPosition
+            points=value.get("player_locations",[])
+            if not isinstance(points,list) or len(points)>30000:raise ValueError("Invalid reviewed player locations")
+            for p in points:
+                if (not isinstance(p,dict) or not finite(p.get("video_s")) or not 0<=p["video_s"]<=14400
+                        or not ReviewedPlayerPosition(p.get("position"),p["video_s"],1,
+                                                     p.get("independent"),p.get("attached")).usable(p["video_s"],1)):
+                    raise ValueError("Player locations require independently visible exact-frame evidence, never host inference")
             self.spec=value
+
+    def player_at(self,video_s,runtime_at,epoch):
+        from core.league_visual import ReviewedPlayerPosition
+        points=[p for p in (self.spec or {}).get("player_locations",[]) if abs(p["video_s"]-video_s)<=.00051]
+        if len(points)!=1:return None
+        return ReviewedPlayerPosition(tuple(points[0]["position"]),runtime_at,epoch,True,False)
 
     def select(self,observations,video_s,scenario,profile):
         if self.synthetic:
@@ -122,7 +136,7 @@ class Eligibility:
                 if (o.champion==label["champion"] and o.source==label["source"]
                         and label["start_s"]-.00051<=video_s<=label["end_s"]+.00051
                         and math.dist(o.position,label["position"])<=.1
-                        and (o.in_assigned_lane is True or o.source=="viewport" and profile.viewport_enabled)):
+                        and profile.relevance(o)[1]):
                     result.append(o);break
         return tuple(result)
 
@@ -225,6 +239,9 @@ def summarize(rows):
                 samples.append(min(spoken,key=lambda r:r["T10"]) if spoken else values[0])
             timings={}
             for name,a,b in (("appearance_to_confirmation","T0","T5"),("confirmation_to_loopback","T5","T11"),
+                ("appearance_to_raw_detection","T0","T4"),("raw_to_confirmation","T4","T5"),
+                ("confirmation_to_acceptance","T5","T7"),("acceptance_to_pcm_ready","T7","T9"),
+                ("pcm_ready_to_loopback","T9","T11"),
                 ("capture_to_loopback","T1","T11"),("appearance_to_loopback","T0","T11"),
                 ("confirmation_to_dac_estimate","T5","dac_ns"),("capture_to_dac_estimate","T1","dac_ns"),
                 ("capture_to_pcm_ready","T1","T9"),("tts_to_pcm_ready","T8","T9")):
@@ -243,6 +260,13 @@ def run_trial(frames,profile,eligibility,scenario,policy,trial,*,audio=False,pro
     from gui.workers import AdviceWorker
     app=QApplication.instance();lock=RLock();epoch=trial+1
     profile=VisualCalibration({**profile.spec,"confirmation_policy":policy},profile.directory)
+    if eligibility.synthetic:
+        # Explicit offline benchmark fixture only. The production profile and
+        # all live approval flags remain unchanged; this is never real accuracy.
+        lane=profile.offline_lane().assigned_lane
+        profile=VisualCalibration({**profile.spec,"regions":[{"label":"offline test region","bounds":[0,0,1,1],
+            "lane":lane,"test_only":True}]},profile.directory)
+        profile.verified_regions.add(0)  # Synthetic eligibility, never operator review.
     pipeline=LeagueVisualPipeline(profile);dispatcher=VisualAlertDispatcher(profile);dispatcher.muted=False
     metrics=VoiceMetrics(True);interaction=InteractionState();rows={};extra_rows=[];notification_rows={};frame_stamps={};active=None
     if not frames:raise ValueError("The replay has no frames")
@@ -344,7 +368,8 @@ def run_trial(frames,profile,eligibility,scenario,policy,trial,*,audio=False,pro
                 regions=frame.regions;t2=time.perf_counter_ns();captured=time.monotonic()
             stats["capture_ms"].append((t2-t1)/1e6)
             t3=time.perf_counter_ns()
-            found=pipeline.process(regions,replace(profile.offline_lane(),epoch=epoch),captured)
+            found=pipeline.process(regions,replace(profile.offline_lane(),epoch=epoch),captured,
+                player_evidence=eligibility.player_at(frame.video_s,captured,epoch))
             stats["processing_ms"].append((time.perf_counter_ns()-t3)/1e6);stats["frames"]+=1
             if observation_sink is not None:
                 # Numeric observations only, one explicitly selected trial per

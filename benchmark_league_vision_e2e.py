@@ -25,7 +25,7 @@ def output_metadata(sd):
 
 
 def calibration_workflow(video,calibration,manifest):
-    from PySide6.QtWidgets import QApplication,QPushButton
+    from PySide6.QtWidgets import QApplication,QPushButton,QCheckBox
     from core.league_visual_evaluation import save_json,file_digest
     from core.league_replay import read_json,local_file
     from core.league_visual import VisualCalibration
@@ -41,19 +41,24 @@ def calibration_workflow(video,calibration,manifest):
         save_json(copy,spec)
     app=QApplication.instance() or QApplication([])
     dialog=LeagueCalibrationDialog(copy,str(video))
+    confirmed=QCheckBox("I inspected these visible sightings and their location evidence in the recording")
+    dialog.layout().addWidget(confirmed)
     button=QPushButton("Confirm selected replay labels and export benchmark eligibility")
     def export():
         try:
             spec=dialog.read_spec();profile=VisualCalibration(spec,copy.parent);lane=profile.offline_lane()
             selected=[dialog.manifest["labels"][i.row()] for i in dialog.truth_table.selectionModel().selectedRows()]
             if not selected:raise ValueError("Visually inspect and select the sighting rows first")
-            if not any(role==lane.assigned_lane for _,_,role in profile.regions) and any(l["source"]=="minimap" for l in selected):
-                raise ValueError("Draw and name the actual assigned lane region; do not infer Yuumi distance")
+            if not confirmed.isChecked():raise ValueError("Explicitly confirm that you reviewed the selected sightings and location evidence")
+            if any(l["source"]=="minimap" and profile.region_evidence(l["position"],lane.assigned_lane)!="verified assigned lane region"
+                   and not any(l["start_s"]<=p["video_s"]<=l["end_s"] for p in dialog.manifest.get("player_locations",[])) for l in selected):
+                raise ValueError("Verify each selected sighting's actual assigned-lane region, or record independent exact-frame player points; do not infer Yuumi distance")
             if any(l["source"]=="viewport" for l in selected) and not profile.viewport_enabled:
                 raise ValueError("Viewport sightings require calibrated nameplate/health-bar evidence")
             save_json(copy,spec)
             save_json(manifest,{"kind":"operator_confirmed_replay_eligibility","video":str(video),"video_fingerprint":fingerprint(video),
                 "calibration":str(copy),"calibration_sha256":file_digest(copy),"selected_sightings":selected,
+                "player_locations":dialog.manifest.get("player_locations",[]),
                 "reviewer":{"kind":"operator_confirmed","method":"Manually inspected selected recorded frames and lane regions; no player-distance inference"}})
             dialog.message.setText("Saved explicit operator-confirmed replay whitelist: "+str(manifest))
         except (ValueError,OSError) as error:dialog.error(error)
