@@ -51,6 +51,9 @@ class ControlsPopup(QFrame):
         self.advice_button.setAccessibleName("Toggle proactive screen and game notices")
         self.advice_button.setToolTip("Capri speaks important screen and game notices, even with MIC OFF. Click to silence notices.")
         controls_layout.addWidget(self.advice_button)
+        self.league_button=self._button("LEAGUE VISION", "leagueVisionButton", "league_vision")
+        self.league_button.setToolTip("Live League observation and recorded-test diagnostics (Ctrl+Shift+V)")
+        controls_layout.addWidget(self.league_button)
         layout.addWidget(self.controls)
 
         self.exit_button = self._button("EXIT", "closeButton", "exit")

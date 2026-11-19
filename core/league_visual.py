@@ -183,7 +183,7 @@ class VisualCalibration:
         role=role if role in ROLES else None
         mode=self.spec.get("game_mode")
         number=self.spec.get("map_number")
-        supported=mode=="CLASSIC" and number==11
+        supported=mode in ("CLASSIC","PRACTICETOOL") and number==11
         lane={"UTILITY":"BOTTOM","BOTTOM":"BOTTOM","TOP":"TOP","MIDDLE":"MIDDLE"}.get(role) if supported else None
         return LaneContext(role,"operator-labelled recording",lane,mode,number,
                            {"blue":"ORDER","red":"CHAOS"}.get(self.orientation,""),

@@ -2,7 +2,7 @@ import json
 import time
 from contextlib import contextmanager
 from dataclasses import replace
-from threading import Event, get_ident
+from threading import Event, Thread, get_ident
 from types import SimpleNamespace
 
 import pytest
@@ -44,6 +44,56 @@ def test_app_or_monitor_change_discards_previous_sequence():
     history.put(frame(3, 100.2, source="other", region=(-1920, 0, 1920, 1080)))
     moved = history.sample(now=100.2)
     assert moved.epoch != other.epoch and [item.jpeg for item in moved.frames] == [b"3"]
+
+
+def test_frame_wait_wakes_on_new_frame_without_replaying_old_context():
+    history = FrameHistory()
+    def region(sequence, source="game", age=0):
+        return SimpleNamespace(sequence=sequence, source_id=source, context_key=(0, 0),
+                               byte_size=16, captured_at=time.monotonic()-age)
+    history.put(region(1))
+    previous = history.sample(count=1)
+    ready, results = Event(), []
+    def wait():
+        ready.set()
+        results.append(history.wait_sample(1, previous.epoch, timeout=2))
+    thread = Thread(target=wait)
+    thread.start()
+    try:
+        assert ready.wait(1)
+        history.put(region(2))
+        thread.join(1)
+        assert not thread.is_alive()
+        assert [f.sequence for f in results[0].frames] == [2]
+        # A new source may restart its sequence number; its epoch identifies it.
+        history.put(region(1, "other game"))
+        changed = history.wait_sample(1, previous.epoch, timeout=.01)
+        assert changed.epoch != previous.epoch and changed.frames[0].source_id == "other game"
+        history.put(region(2, "other game", age=5))
+        assert not history.wait_sample(1, changed.epoch, max_age=.5, timeout=.01).frames
+    finally:
+        history.clear()
+        thread.join(2)
+
+
+def test_frame_wait_is_released_by_capture_shutdown():
+    history = FrameHistory()
+    epoch = history.sample().epoch
+    ready, results = Event(), []
+    def wait():
+        ready.set()
+        results.append(history.wait_sample(0, epoch, timeout=2))
+    thread = Thread(target=wait)
+    thread.start()
+    try:
+        assert ready.wait(1)
+        history.clear()
+        thread.join(1)
+        assert not thread.is_alive()
+        assert not results[0].frames and results[0].epoch != epoch
+    finally:
+        history.clear()
+        thread.join(2)
 
 
 @pytest.mark.parametrize("failure", [OSError("BitBlt failed"), CaptureLayoutChanged()])

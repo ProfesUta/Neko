@@ -411,7 +411,8 @@ class LeagueClient:
                         self._roster = tuple({"champion": safe_text(player.get("championName")),
                                               "side": "ally" if player.get("team") == team else "enemy",
                                               "position": safe_text(player.get("position"), 20).upper()}
-                                             for player in players[:20] if isinstance(player, dict) and team and player.get("team"))
+                                             for player in players[:20] if isinstance(player, dict) and team and player.get("team")
+                                             and safe_text(player.get("championName")))
                         visual_update=(epoch,game.get("gameMode"),game.get("mapNumber"),
                                        safe_text(own.get("position"),20).upper(),team,safe_text(own.get("championName")))
                         self.journal.update(epoch, snapshot)

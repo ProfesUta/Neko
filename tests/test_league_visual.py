@@ -280,7 +280,7 @@ def test_disabled_capture_does_not_discover_windows_or_read_desktop(visual_fixtu
     class Forbidden:
         def windows(self):raise AssertionError("No scan while gate is off")
     capture.grounder=Forbidden()
-    with pytest.raises(RuntimeError,match="not approved"):capture.geometry()
+    with pytest.raises(RuntimeError,match="not enabled"):capture.geometry()
 
 
 def test_game_client_geometry_uses_physical_negative_coordinates_and_rejects_occlusion(visual_fixture):
@@ -294,12 +294,13 @@ def test_game_client_geometry_uses_physical_negative_coordinates_and_rejects_occ
         def IsWindow(self,handle):return True
         def IsWindowVisible(self,handle):return True
         def IsIconic(self,handle):return False
+        def GetWindowThreadProcessId(self,handle,p):p._obj.value=42;return 1
         def GetClientRect(self,handle,p):p._obj.right=1920;p._obj.bottom=1080;return True
         def ClientToScreen(self,handle,p):p._obj.x=-2560;p._obj.y=-200;return True
         def GetWindow(self,handle,which):return 8 if handle==7 and self.obscured else 0
         def GetWindowRect(self,handle,p):
             p._obj.left=-1000;p._obj.top=600;p._obj.right=-640;p._obj.bottom=880;return True
-    grounder=SimpleNamespace(windows=lambda:[SimpleNamespace(handle=7,application="League of Legends.exe")])
+    grounder=SimpleNamespace(windows=lambda:[SimpleNamespace(handle=7,pid=42,application="League of Legends.exe")])
     capture=GameWindowCapture(profile,lambda:True,grounder);capture.api=API()
     regions,client=capture.geometry()
     assert client==(-2560,-200,1920,1080)
@@ -331,6 +332,7 @@ def test_live_worker_recovers_from_temporary_data_outage_without_another_polling
         def join(self):pass
         def status(self):return {}
     monkeypatch.setattr("gui.league_vision.LiveScreenStream",Stream)
+    monkeypatch.setattr("gui.league_vision.prepare_live_profile",lambda *args:VisualCalibration(spec,root))
     monkeypatch.setattr("core.league_capture.GameWindowCapture",lambda *args:SimpleNamespace(open=lambda:None))
     league=League();worker=LeagueVisualWorker(league,root/"calibration.json")
     worker.start()

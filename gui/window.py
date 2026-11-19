@@ -45,6 +45,7 @@ class CapriWindow(QMainWindow):
         context.league_visual=self.league_visual_service
         self.league_visual_service.stopped.connect(self._finish_close_if_ready)
         self.league_visual_service.notice.connect(self._replay_notice)
+        self.league_visual_service.notification.connect(self.handle_league_notification,Qt.ConnectionType.QueuedConnection)
         self.voice_worker = None
         self.voice_warmup_worker = None
         self._voice_preload_status = "Voice models load when enabled"
@@ -135,6 +136,8 @@ class CapriWindow(QMainWindow):
         self._live_status_timer.timeout.connect(self._sync_vision)
         self._live_status_timer.timeout.connect(self._deliver_league_notification)
         self._live_status_timer.timeout.connect(self._deliver_screen_advice)
+        self._live_status_timer.timeout.connect(self.league_visual_service.refresh)
+        self.league_visual_service.changed.connect(self._league_visual_status_changed)
         self._live_status_timer.start(1000)
         self._shortcuts = []
         for sequence, action in (
@@ -142,6 +145,7 @@ class CapriWindow(QMainWindow):
             ("Ctrl+.", self.stop_current_turn),
             ("Ctrl+T", self.teleport_randomly),
             ("Ctrl+Shift+L", self._open_league_calibration),
+            ("Ctrl+Shift+V", self.league_visual_service.open_status),
         ):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
@@ -347,6 +351,7 @@ class CapriWindow(QMainWindow):
             "voice": self.toggle_voice, "vision": self.toggle_vision,
             "chat": self.toggle_chat, "stop": self.stop_current_turn,
             "exit": self.close, "advice": self.toggle_advice,
+            "league_vision": self.league_visual_service.open_status,
         }
         actions[action]()
 
@@ -658,6 +663,7 @@ class CapriWindow(QMainWindow):
         self._pending_advice = None
 
     def handle_advice_candidate(self, advice):
+        if self.league_visual_service.observation_only and self.context.league.session_active:return
         if (
             self._closing or self._stopping or not self._advice_enabled
             or self.vision_worker is None or self.vision_worker.isInterruptionRequested()
@@ -689,6 +695,8 @@ class CapriWindow(QMainWindow):
             self.advice_worker.start()
 
     def _deliver_screen_advice(self):
+        if self.league_visual_service.observation_only and self.context.league.session_active:
+            self._deferred_screen_advice=None;return
         advice = self._deferred_screen_advice
         if advice is None:
             return
@@ -751,6 +759,19 @@ class CapriWindow(QMainWindow):
 
     def _open_league_calibration(self):
         if not self._closing:self.league_visual_service.open_calibration()
+
+    def _league_visual_status_changed(self):
+        if self._closing:return
+        status=self.league_visual_service.status()
+        button=self.controls_popup.league_button
+        button.setText("LEAGUE "+status["mode"].replace("LIVE_","").replace("_"," "))
+        button.setToolTip(status["status"]+". "+status["speech_disabled_reason"])
+        if self.league_visual_service.observation_only and self.context.league.session_active:
+            self._deferred_screen_advice=None
+            if self._pending_advice is not None and not isinstance(self._pending_advice,LeagueAnnouncement):
+                if self.advice_worker:self.advice_worker.stop()
+                if self.voice_worker:self.voice_worker.cancel_advice()
+                self.advice_bubble.hide()
 
     def toggle_vision(self):
         if self._closing:

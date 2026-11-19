@@ -40,7 +40,7 @@ class LaneTracker:
     def _publish(self, mode=None, map_number=None, team="", champion="", epoch=0):
         role = self._role or self.fallback
         source = self._source if self._role else "user-configured fallback" if role else "unavailable"
-        supported = mode == "CLASSIC" and map_number == 11
+        supported = mode in ("CLASSIC","PRACTICETOOL") and map_number == 11
         lane = {"TOP":"TOP","MIDDLE":"MIDDLE","BOTTOM":"BOTTOM","UTILITY":"BOTTOM"}.get(role) if supported else None
         state = LaneContext(role,source,lane,mode,map_number,team,champion,epoch,supported)
         changed = state != self._context

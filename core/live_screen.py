@@ -3,7 +3,7 @@
 import time
 from collections import deque
 from dataclasses import dataclass
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, Condition
 
 
 class CaptureLayoutChanged(Exception):
@@ -22,6 +22,7 @@ class FrameHistory:
         self.max_seconds = max(0.1, float(max_seconds))
         self.max_bytes = max(1, int(max_bytes))
         self._lock = Lock()
+        self._changed = Condition(self._lock)
         self._frames = deque()
         self._bytes = 0
         self._key = None
@@ -32,6 +33,7 @@ class FrameHistory:
         self._bytes = 0
         self._key = None
         self._epoch += 1
+        self._changed.notify_all()
 
     def clear(self):
         with self._lock:
@@ -52,6 +54,7 @@ class FrameHistory:
                 self._key = key
             self._frames.append((frame, size))
             self._bytes += size
+            self._changed.notify_all()
             while (len(self._frames) > self.max_frames or self._bytes > self.max_bytes
                    or self._frames[0][0].captured_at < frame.captured_at - self.max_seconds):
                 _old, old_size = self._frames.popleft()
@@ -70,6 +73,14 @@ class FrameHistory:
                         and selected[-1].captured_at - frame.captured_at >= spacing):
                     selected.append(frame)
             return FrameBatch(self._epoch, tuple(reversed(selected)))
+
+    def wait_sample(self,sequence,epoch,*,max_age=1,timeout=.1):
+        """Wake the existing detector on a new frame/context, without a polling timer."""
+        with self._changed:
+            self._changed.wait_for(lambda:(bool(self._frames) and
+                (self._epoch!=epoch or getattr(self._frames[-1][0],"sequence",None)!=sequence))
+                or epoch is not None and self._epoch!=epoch,timeout)
+        return self.sample(count=1,max_age=max_age)
 
     def status(self):
         with self._lock:

@@ -48,6 +48,9 @@ LEAGUE_KNOWLEDGE_PATCH = os.getenv("CAPRI_LEAGUE_PATCH", "")  # Empty: reuse pin
 LEAGUE_SIGHTING_NOTES_ENABLED = os.getenv("CAPRI_LEAGUE_SIGHTING_NOTES_APPROVED", "0") == "1"
 LEAGUE_REPLAY_ENABLED = os.getenv("CAPRI_LEAGUE_REPLAY", "0") == "1"  # Recorded files only; explicit command.
 LEAGUE_VISION_ENABLED = os.getenv("CAPRI_LEAGUE_VISION", "0") == "1"
+# Empty preserves the legacy opt-in as silent observation. OFF is the default.
+LEAGUE_VISION_MODE = os.getenv("CAPRI_LEAGUE_VISION_MODE", "").upper()
+# Legacy request flag only; it is never accepted as evidence of Riot approval.
 LEAGUE_VISION_RIOT_APPROVED = os.getenv("CAPRI_LEAGUE_VISION_APPROVED", "0") == "1"
 LEAGUE_VISION_FPS = float(os.getenv("CAPRI_LEAGUE_VISION_FPS", "10"))
 LEAGUE_VISION_FALLBACK_ROLE = os.getenv("CAPRI_LEAGUE_FALLBACK_ROLE", "UNKNOWN").upper()

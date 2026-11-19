@@ -35,6 +35,7 @@ def isolated_memory(tmp_path, monkeypatch):
     monkeypatch.setattr("config.LEAGUE_SIGHTING_NOTES_ENABLED", False)
     monkeypatch.setattr("config.LEAGUE_REPLAY_ENABLED", False)
     monkeypatch.setattr("config.LEAGUE_VISION_ENABLED", False)
+    monkeypatch.setattr("config.LEAGUE_VISION_MODE", "")
     monkeypatch.setattr("config.LEAGUE_VISION_RIOT_APPROVED", False)
     monkeypatch.setattr("config.LEAGUE_VISION_CALIBRATION", tmp_path / "league-vision" / "calibration.json")
     monkeypatch.setattr("config.DATA_DIR",tmp_path)
