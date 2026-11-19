@@ -26,10 +26,10 @@ Open the editor inside Capri with **Ctrl+Shift+L**, ask to open League vision ca
 
 ```powershell
 Set-Location F:\Neko
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py label --video "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision label --video "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json"
 ```
 
-**Automatic icon setup:** manual portrait cropping and confirmation are optional for using the detector. On an explicit offline analysis, missing references are downloaded from Riot's pinned Data Dragon champion catalog and cached. Existing working recording crops are preserved. The editor also has **Get champion icons**; standalone preparation is available with `python -B evaluate_league_vision.py icons --calibration data/league-vision/calibration.json`. `--replace` is an explicit opt-in to replace existing crops with official baselines; normal detection does not do that. Downloads use the existing static-reference HTTP client, bounded public PNG validation, cancellable/coalesced requests and atomic raw-asset writes. They never happen per frame or through Ollama. A cached reference does not certify detection accuracy: low-confidence matches are still rejected, and real accuracy remains unavailable without labels. No manual review gate was added to detection or automatic notification proposals.
+**Automatic icon setup:** manual portrait cropping and confirmation are optional for using the detector. On an explicit offline analysis, missing references are downloaded from Riot's pinned Data Dragon champion catalog and cached. Existing working recording crops are preserved. The editor also has **Get champion icons**; standalone preparation is available with `python -B -m scripts.evaluate_league_vision icons --calibration data/league-vision/calibration.json`. `--replace` is an explicit opt-in to replace existing crops with official baselines; normal detection does not do that. Downloads use the existing static-reference HTTP client, bounded public PNG validation, cancellable/coalesced requests and atomic raw-asset writes. They never happen per frame or through Ollama. A cached reference does not certify detection accuracy: low-confidence matches are still rejected, and real accuracy remains unavailable without labels. No manual review gate was added to detection or automatic notification proposals.
 
 Automatic setup verification: the current private calibration returned **ready, 10 preserved references, no manual cropping required**, without rewriting the file or invalidating its existing recording report. A separate private profile with no templates successfully bootstrapped all **10 official references** from the existing Riot cache and loaded the detector. The original working profile was byte-for-byte preserved. Automated coverage includes cached/offline operation, missing-only versus explicit replacement, malformed/oversized responses, failed requests, filename traversal rejection, request coalescing, cancellation, concurrent calibration edits, automatic video preparation and the reused Qt worker. Complete suite: **801 passed in 111.54 seconds** (`artifacts/phase6/automatic-icons-full-tests.txt`); final targeted verification after help-text/read-consistency cleanup: **87 passed in 3.92 seconds** (`automatic-icons-final-tests.txt`). No new voice, GPU, match-FPS or real-accuracy measurement is claimed for this setup change.
 
@@ -50,20 +50,20 @@ All runtime profiles, references, labels and reports default to ignored `data/le
 
 On the first run, `data/league-vision/calibration.json` does not exist until calibration is saved in the editor. `detect` now reports the exact missing path and prints an executable setup command instead of a traceback. Run the `label` command above first; it automatically loads the supplied video frame. Draw the measured minimap bounds, enter the verified roster/icon references and click **Save calibration** (or **Generate candidates**). An illustrative/example profile is not a verified calibration and is not silently substituted. Missing recordings are reported separately by path. Detection failure exits with code 2 and does not open an unsolicited GUI.
 
-The first-run fix adds purpose/path-aware file errors in `core/league_replay.py`, labels calibration inputs in `core/league_visual.py` and `core/league_visual_evaluation.py`, and adds safe CLI error handling/setup commands and editor frame loading in `evaluate_league_vision.py`. Eight regression cases in `tests/test_league_vision_cli.py` cover these paths, quoting, GUI startup order and preservation of unexpected programming errors. Targeted validation: **58 passed**. Complete suite after this fix: **789 passed in 110.41 seconds** (`artifacts/phase6/calibration-fix-tests.txt`). The actual failed command was also rerun: it now identifies the missing calibration and supplies the setup command, without creating a guessed profile or an output folder. No synthesis, live capture or detector algorithm changed in this fix.
+The first-run fix adds purpose/path-aware file errors in `core/league_replay.py`, labels calibration inputs in `core/league_visual.py` and `core/league_visual_evaluation.py`, and adds safe CLI error handling/setup commands and editor frame loading in `scripts/evaluate_league_vision.py`. Eight regression cases in `tests/test_league_vision_cli.py` cover these paths, quoting, GUI startup order and preservation of unexpected programming errors. Targeted validation: **58 passed**. Complete suite after this fix: **789 passed in 110.41 seconds** (`artifacts/phase6/calibration-fix-tests.txt`). The actual failed command was also rerun: it now identifies the missing calibration and supplies the setup command, without creating a guessed profile or an output folder. No synthesis, live capture or detector algorithm changed in this fix.
 
 After saving the measured calibration:
 
 ```powershell
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py detect "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json" --output "F:\Neko\data\league-vision\real-review-01"
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py label --video "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json" --detections "F:\Neko\data\league-vision\real-review-01\detections.json" --labels "F:\Neko\data\league-vision\real-labels.json"
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py evaluate "F:\Neko\data\league-vision\real-review-01\detections.json" --labels "F:\Neko\data\league-vision\real-labels.json" --output "F:\Neko\data\league-vision\real-accuracy.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision detect "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json" --output "F:\Neko\data\league-vision\real-review-01"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision label --video "F:\Neko\tests\fixtures\league_real_gameplay.mp4" --calibration "F:\Neko\data\league-vision\calibration.json" --detections "F:\Neko\data\league-vision\real-review-01\detections.json" --labels "F:\Neko\data\league-vision\real-labels.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision evaluate "F:\Neko\data\league-vision\real-review-01\detections.json" --labels "F:\Neko\data\league-vision\real-labels.json" --output "F:\Neko\data\league-vision\real-accuracy.json"
 ```
 
 Choose a new output folder for another run. To save debug images, add `--debug-overlays` to `detect`. No sound or speech is played by detection/evaluation. Optional explicit controlled timing sound, using the existing playback path:
 
 ```powershell
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py test-sound --samples 20
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision test-sound --samples 20
 ```
 
 This reports available software callback/DAC presentation estimates. It does **not** measure physical acoustic output, champion detection or Kokoro voice latency, and never starts recording.
@@ -105,7 +105,7 @@ Reproduce portable processing benchmarks and tests:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-replay.txt
-.\.venv\Scripts\python.exe -B benchmark_league.py --seconds 1 --companion --replay --vision --output artifacts/phase6/local-benchmark.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --seconds 1 --companion --replay --vision --output artifacts/phase6/local-benchmark.json
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 ```
 
@@ -124,7 +124,7 @@ The subsequent complete pass over the supplied recording analyzed **2,539 frames
 Open the latest candidate list for explicit review:
 
 ```powershell
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py label --detections "data\league-vision\real-review-02\detections.json" --labels "data\league-vision\real-review-02\labels.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision label --detections "data\league-vision\real-review-02\detections.json" --labels "data\league-vision\real-review-02\labels.json"
 ```
 
 Offscreen visual checks loaded the synthetic overlay and the supplied real recording into the actual dialog, saved local previews, and closed their decoding workers. `git diff --check` passed (only normal LF/CRLF notices). A separate diff check confirmed no modifications to `voice/`, sprite assets, `gui/sprites.py`, `gui/teleport.py`, `core/inference_priority.py` or `core/model_client.py`. No orphan Python process remained after tests.
@@ -145,7 +145,7 @@ Both runtime switches stay off. An environment flag is an operator attestation, 
 | `core/league_visual_sound.py` | Optional cached controlled-test tone through existing playback |
 | `gui/league_vision.py` | Dormant-by-default CV worker/service, Qt lifecycle, recovery and freshness guard |
 | `gui/league_calibration.py` | Recorded-frame crop/calibration, confirm/reject and missed-sighting editor |
-| `evaluate_league_vision.py` | Detect/label/evaluate/test-sound CLI |
+| `scripts/evaluate_league_vision.py` | Detect/label/evaluate/test-sound CLI |
 | `examples/league-vision-calibration.json` | Illustrative measured-calibration schema |
 | `core/league.py` | Existing-data role publication and guarded visual notifications; no extra requests |
 | `core/league_replay.py` | Reuse/optimize the existing template matcher |
@@ -153,7 +153,7 @@ Both runtime switches stay off. An environment flag is an operator attestation, 
 | `gui/workers.py`, `gui/window.py` | Queued role state, service/cleanup, calibration shortcut, evidence-source label |
 | `tools/league.py`, `core/chat.py`, `core/conversation.py` | Scoped calibration/status tools and narrow action routing |
 | `config.py`, `.gitignore` | Safe defaults and local/private artifact exclusions |
-| `benchmark_league.py` | Extend existing benchmark with all-enemy/nameplate processing |
+| `benchmarks/benchmark_league.py` | Extend existing benchmark with all-enemy/nameplate processing |
 | `requirements-replay.txt` | Clarify existing optional OpenCV purpose; version unchanged |
 | `tests/test_league_visual.py`, `tests/test_league_icons.py`, `tests/conftest.py` | Detection, automatic icon caching/coalescing/cancellation/security, Qt workflow and isolation from real captures/models |
 | `LEAGUE_COMPANION_GUIDE.md`, this report | Entry points, evidence and limitations |

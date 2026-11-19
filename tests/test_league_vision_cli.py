@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-import evaluate_league_vision as cli
+from scripts import evaluate_league_vision as cli
 from core.league_visual_evaluation import analyze_recording
 from core.league_replay import LocalFileError,local_file
 
@@ -46,6 +46,7 @@ def test_missing_video_is_not_misreported_as_missing_calibration(tmp_path,capsys
 def test_setup_command_quotes_spaces_apostrophes_and_dollar_signs(tmp_path):
     video=tmp_path/"Utaris's $recording.mp4";calibration=tmp_path/"my calibration.json"
     command=cli.calibration_command(video,calibration)
+    assert "scripts.evaluate_league_vision" in command
     if os.name=="nt":
         assert command.startswith("& '")
         assert "'"+str(video).replace("'","''")+"'" in command

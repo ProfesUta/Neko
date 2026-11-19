@@ -443,7 +443,7 @@ def test_real_policy_harness_reuses_identical_raw_evidence_and_simulation_never_
 
 
 def test_reference_ablations_cannot_expand_a_champion_limited_review_scope(visual_video):
-    from benchmark_league import reference_variant_benchmark
+    from benchmarks.benchmark_league import reference_variant_benchmark
     video,calibration,output=visual_video
     analyze_recording(video,calibration,output,cache_minimap=True)
     labels=new_labels(video,calibration);labels.update(kind="synthetic",annotation_complete=True,complete_champions=["Lee Sin"])

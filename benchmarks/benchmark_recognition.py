@@ -18,7 +18,7 @@ from threading import Event
 import numpy as np
 import config
 from core.latency import VoiceMetrics, LatencyTrace, trace_scope
-from benchmark_voice import read_recording, hardware
+from benchmarks.benchmark_voice import read_recording, hardware
 from voice import voice
 
 

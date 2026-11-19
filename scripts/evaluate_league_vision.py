@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def calibration_command(video,calibration):
-    arguments=[sys.executable,"-B",str(Path(__file__).resolve()),"label","--video",str(video),"--calibration",str(calibration)]
+    arguments=[sys.executable,"-B","-m","scripts.evaluate_league_vision","label","--video",str(video),"--calibration",str(calibration)]
     if os.name=="nt":
         # PowerShell literal quoting also handles spaces, dollar signs and apostrophes.
         return "& "+" ".join("'"+value.replace("'","''")+"'" for value in arguments)

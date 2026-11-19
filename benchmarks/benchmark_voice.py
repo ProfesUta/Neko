@@ -662,7 +662,7 @@ def replay_bench(samples, model, question="Explain gravity in one short sentence
                             target[name].append((trace._marks[mark_name] - speech_end) / 1e6)
             paired = {}
             if len(variants) == 2:
-                from benchmark_playback import paired_interval
+                from benchmarks.benchmark_playback import paired_interval
                 for label, readings in (("dac", paired_dac), ("loopback", paired_loopback)):
                     if all(len(readings[name]) == samples for name in variants):
                         paired[label] = paired_interval(*(readings[name] for name in variants))

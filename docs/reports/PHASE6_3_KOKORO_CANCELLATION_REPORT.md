@@ -140,7 +140,7 @@ Deadlines are bounded and validated before launching work. The original request 
 | `voice/kokoro_worker.py` | Backward-compatible protocol 2, capability declaration, callback marker cancellation and discarded partial results |
 | `gui/workers.py` | Lower-priority native admission for existing advice speech; user speech route unchanged |
 | `config.py` | Three environment-overridable cancellation/recovery settings |
-| `benchmark_kokoro_cancellation.py` | Reproducible fixed-fixture policy comparison with actual synthesis/playback and optional loopback/retained WAVs |
+| `benchmarks/benchmark_kokoro_cancellation.py` | Reproducible fixed-fixture policy comparison with actual synthesis/playback and optional loopback/retained WAVs |
 | `tests/test_kokoro_recovery.py` | Hardware-free request/late-message/file-ownership/priority/shutdown/failure regressions |
 | `tests/test_tts.py` | Explicit restart-policy regression with guaranteed subprocess cleanup |
 | `tests/conftest.py` | Isolated recovery settings and asynchronous native-session teardown |
@@ -154,25 +154,25 @@ No new dependencies, polling service, GPU runtime or model installation. Private
 Set-Location F:\Neko
 
 # Primary paired real-audio comparison; keep all other output quiet.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --cases immediate,normal --audio --loopback --save-audio artifacts\phase6_3\listening-local --output artifacts\phase6_3\audio-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --cases immediate,normal --audio --loopback --save-audio artifacts\phase6_3\listening-local --output artifacts\phase6_3\audio-local
 
 # Remaining real-engine cases; each policy runs 20 measured trials.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --cases before,native,chunk,complete,rapid,notifications,startup,playback --audio --loopback --output artifacts\phase6_3\cases-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --cases before,native,chunk,complete,rapid,notifications,startup,playback --audio --loopback --output artifacts\phase6_3\cases-local
 
 # Late startup cancellation and deliberately stalled worker fixture.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --cases startup-late,fault --audio --loopback --output artifacts\phase6_3\fallback-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --cases startup-late,fault --audio --loopback --output artifacts\phase6_3\fallback-local
 
 # Direct native callback contract check and fixed listening WAVs; no playback.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --native-probe --save-audio artifacts\phase6_3\probe-listening-local --output artifacts\phase6_3\probe-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --native-probe --save-audio artifacts\phase6_3\probe-listening-local --output artifacts\phase6_3\probe-local
 
 # Quiet repeat of the affected output cases, baseline versus selected policy.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --policies restart,cooperative --cases notifications,rapid,startup,playback,startup-late,fault --audio --loopback --output artifacts\phase6_3\quiet-recheck-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --policies restart,cooperative --cases notifications,rapid,startup,playback,startup-late,fault --audio --loopback --output artifacts\phase6_3\quiet-recheck-local
 
 # Consecutive reuse without another policy replacing the engine between trials.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --policies cooperative --cases rapid --output artifacts\phase6_3\residency-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --policies cooperative --cases rapid --output artifacts\phase6_3\residency-local
 
 # No output-device use; real synthesis/recovery still measured. Playback-only case is omitted.
-.\.venv\Scripts\python.exe -B benchmark_kokoro_cancellation.py --samples 20 --cases native,chunk,complete,immediate,rapid,startup,normal --output artifacts\phase6_3\pcm-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_kokoro_cancellation --samples 20 --cases native,chunk,complete,immediate,rapid,startup,normal --output artifacts\phase6_3\pcm-local
 
 .\.venv\Scripts\python.exe -B -m pytest -q
 

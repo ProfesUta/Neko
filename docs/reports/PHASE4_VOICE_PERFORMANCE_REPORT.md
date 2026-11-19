@@ -22,7 +22,7 @@ Times are milliseconds. At n=20, the project's order-statistic percentile conven
 
 The difference of loopback-onset medians is **123.88 ms, 6.29%**. The paired median reduction is **123.43 ms**, with a fixed-seed, 2,000-resample paired-bootstrap 95% interval of **112.62–132.63 ms**. These describe this small controlled fixture cohort, not all future conversations or hardware. No underflows or empty initial output callbacks were reported in either arm.
 
-Source: [final paired replay](artifacts/performance/phase4_final_paired.json). This short greeting is different from Phase 3's gravity fixture. **Do not compare 1845 ms with Phase 3's 2745 ms and call that an improvement:** the fixtures and endpoints differ. The valid headline comparison is the identical-input driver A/B above.
+Source: [final paired replay](../../artifacts/performance/phase4_final_paired.json). This short greeting is different from Phase 3's gravity fixture. **Do not compare 1845 ms with Phase 3's 2745 ms and call that an improvement:** the fixtures and endpoints differ. The valid headline comparison is the identical-input driver A/B above.
 
 ## Measurement definitions
 
@@ -75,7 +75,7 @@ The approximately 2745 ms historical Phase 3 audio-readiness result consisted of
 
 ## Recognition and endpoint experiments
 
-`benchmark_recognition.py` saves a repeatable corpus and supports a separate human-recording manifest. This run used generated speech, explicit inserted pauses, reduced amplitude and seeded noise—not human microphone recordings. Each configuration has 20 repetitions per fixed fixture, not 20 independent speakers or utterances.
+`benchmarks/benchmark_recognition.py` saves a repeatable corpus and supports a separate human-recording manifest. This run used generated speech, explicit inserted pauses, reduced amplitude and seeded noise—not human microphone recordings. Each configuration has 20 repetitions per fixed fixture, not 20 independent speakers or utterances.
 
 Silero retained threshold 0.5, 512 samples at 16 kHz, 200 ms speech padding and ten pre-roll blocks. Sample-index endpoint delay is separate from accelerated offline computation time.
 
@@ -85,7 +85,7 @@ Silero retained threshold 0.5, 512 samples at 16 kHz, 200 ms speech padding and 
 | 400 ms | 461.56 | 408.94 | 504.94 | 20 / 20 | 20 / 20 |
 | 500 ms | 557.56 | 504.94 | 600.94 | 0 / 20 | 20 / 20 |
 
-Pause fixtures insert 350/550 ms between two trimmed spoken parts, each retaining about 50 ms of boundary padding. Their actual acoustic gaps are not exactly the labels and are not natural human hesitations. All thresholds produced zero false completed utterances on the silence/noise-only controls. The existing 500 ms setting can still end a longer hesitation early; this limitation was not hidden or “fixed” by making every request slower. The shorter settings do not justify changing the default without a representative human corpus. Full p50/p95/p99/max and sample counts: [corpus results](artifacts/performance/phase4_stt_corpus.json).
+Pause fixtures insert 350/550 ms between two trimmed spoken parts, each retaining about 50 ms of boundary padding. Their actual acoustic gaps are not exactly the labels and are not natural human hesitations. All thresholds produced zero false completed utterances on the silence/noise-only controls. The existing 500 ms setting can still end a longer hesitation early; this limitation was not hidden or “fixed” by making every request slower. The shorter settings do not justify changing the default without a representative human corpus. Full p50/p95/p99/max and sample counts: [corpus results](../../artifacts/performance/phase4_stt_corpus.json).
 
 Four- and eight-thread recognition produced the same reference word-error counts in all tested fixtures: zero edits on the short, quiet, noisy and paused questions; one edit against 18 reference words on the long question. Silence and noise-only controls produced no hallucinated text in these samples with either filter setting. These observations are not a guarantee against hallucinations on other inputs.
 
@@ -97,7 +97,7 @@ The isolated corpus favored eight threads: short recognition 555.99→408.25 ms 
 
 An isolated OpenMP passive-wait experiment also measured 4/6/8 threads: short medians 553.38/481.11/408.15 ms with CPU time 1.719/1.703/2.266 CPU-seconds. Six passive threads merit further testing, but no global OpenMP wait policy was changed in Capri: it can affect other native libraries and was not validated in the same complete application/human workload. `--passive-wait` is an explicit benchmark-only experiment. References: [CTranslate2 parallelism](https://opennmt.net/CTranslate2/parallel), [OpenMP wait policy](https://openmp.llvm.org/design/Runtimes.html).
 
-Raw: [thread/filter sweep](artifacts/performance/phase4_stt_threads.json), [full corpus](artifacts/performance/phase4_stt_corpus.json), [passive experiment](artifacts/performance/phase4_stt_passive.json), [rejected eight-thread conversational candidate](artifacts/performance/phase4_paired_replay.json). Audio preparation/model reuse were audited; repeated model loading and large unnecessary runtime conversions were not found. Capture copies/pre-roll handling were retained rather than trading reliability for microseconds.
+Raw: [thread/filter sweep](../../artifacts/performance/phase4_stt_threads.json), [full corpus](../../artifacts/performance/phase4_stt_corpus.json), [passive experiment](../../artifacts/performance/phase4_stt_passive.json), [rejected eight-thread conversational candidate](../../artifacts/performance/phase4_paired_replay.json). Audio preparation/model reuse were audited; repeated model loading and large unnecessary runtime conversions were not found. Capture copies/pre-roll handling were retained rather than trading reliability for microseconds.
 
 ## League mode validation and limits
 
@@ -110,7 +110,7 @@ The existing offscreen GUI harness was exercised with real VAD/Whisper/Kokoro, r
 | Normal desktop GUI, mock League role answer | 1522.63 / 1550.84 / 1550.84 / 1551.66 | 20 |
 | Docked Companion GUI, champion-select fixture | 1512.40 / 1565.74 / 1565.74 / 1582.95 | 20 |
 
-No LLM answer calls or PortAudio underflows were recorded in either case. These are separate cohorts; the approximately 10 ms median difference does **not** establish that Companion mode is faster or has zero overhead. [Desktop results](artifacts/performance/phase4_desktop_league_fixture.json), [Companion results](artifacts/performance/phase4_companion_league_fixture.json).
+No LLM answer calls or PortAudio underflows were recorded in either case. These are separate cohorts; the approximately 10 ms median difference does **not** establish that Companion mode is faster or has zero overhead. [Desktop results](../../artifacts/performance/phase4_desktop_league_fixture.json), [Companion results](../../artifacts/performance/phase4_companion_league_fixture.json).
 
 Automatic session transitions, startup/reconnection, match exit, SVG switching, movement lock and topology behavior remain covered by mocked/offscreen regression tests. Actual match / vision-enabled / vision-disabled comparisons require the live application with the same questions and comparable game conditions; the commands below enable production tracing without adding a polling system. The existing six-second background inference policy was not changed or disabled to improve these measurements.
 
@@ -124,7 +124,7 @@ The fixed-PCM device test used exactly the same saved Kokoro samples, alternatin
 | Shared WASAPI, one stream per reply | 94.55 / 95.98 / 95.98 / 104.19 | 22.38 |
 | Reused MME session, benchmark-only prototype | 171.33 / 184.74 / 184.74 / 185.95 | 61.80 |
 
-Paired fixed-PCM median reduction: 118.84 ms, bootstrap 95% interval 115.01–120.58 ms. Zero PortAudio underflows were reported in all three cases. The reused prototype's gap counters include deliberate inter-trial idle time and are **not** within-reply speech gaps. Keeping a stream active saved less than changing the driver and would add device-switch/idle/shutdown lifecycle work. No persistent output service was added. [Device experiment](artifacts/performance/phase4_playback.json).
+Paired fixed-PCM median reduction: 118.84 ms, bootstrap 95% interval 115.01–120.58 ms. Zero PortAudio underflows were reported in all three cases. The reused prototype's gap counters include deliberate inter-trial idle time and are **not** within-reply speech gaps. Keeping a stream active saved less than changing the driver and would add device-switch/idle/shutdown lifecycle work. No persistent output service was added. [Device experiment](../../artifacts/performance/phase4_playback.json).
 
 WASAPI remains shared mode with Windows format conversion enabled: Kokoro's PCM16/24 kHz format is retained, while this endpoint mixes at 48 kHz. Endpoint selection uses a unique full or MME-truncated friendly-name prefix match; ambiguous/virtual/unavailable matches retain the original route. It is resolved per reply rather than pinned in an always-open stream. Open/start failures can fall back before samples are consumed. A partially started stream never replays already consumed PCM. Mock tests cover device selection changes, ambiguity, open/start errors and cancellation; physical hot-plugging was not tested.
 
@@ -137,7 +137,7 @@ Real interruption results, 20 injections each:
 | Ongoing native generation cancellation to generator released | 3.05 / 6.07 / 6.07 / 8.34 |
 | Ongoing generation cancellation to next voice ready after reload | 1621.99 / 1861.61 / 1861.61 / 1880.60 |
 
-Final-chunk cancellation reused the worker in 20/20 cases; ongoing synthesis intentionally terminated it in 20/20. The existing 50 ms completion-ack drain remains unchanged. Driver abort return is not acoustic silence detection. The device probe includes first-use output initialization; its largest readiness outlier was not removed. [Interruption results](artifacts/performance/phase4_interruption.json).
+Final-chunk cancellation reused the worker in 20/20 cases; ongoing synthesis intentionally terminated it in 20/20. The existing 50 ms completion-ack drain remains unchanged. Driver abort return is not acoustic silence detection. The device probe includes first-use output initialization; its largest readiness outlier was not removed. [Interruption results](../../artifacts/performance/phase4_interruption.json).
 
 In the longer conversational candidate, empty output-frame gaps between native chunks were about 10.46 ms median on MME versus 0.46 ms on WASAPI, with no underflows. That candidate also changed recognition thread count, so this is supporting evidence rather than an isolated gap comparison. No sample trimming, word removal, sentence fragmentation or new audio post-processing was introduced. Listening for clicks and naturalness remains a separate manual check.
 
@@ -151,9 +151,9 @@ Phase 4 changes relative to the saved Phase 3 source in `artifacts/performance/p
 | `voice/voice.py` | Capture completion and eager/lazy recognition spans; optional bounded CPU thread override, default behavior retained |
 | `core/latency.py` | Separate PCM/queue/callback/DAC/capture/explicit-loopback intervals |
 | `config.py` | `CAPRI_TTS_WASAPI=1`; `CAPRI_WHISPER_THREADS=0` |
-| `benchmark_voice.py` | Paired AB/BA comparisons, full warm-up turns, opt-in passive loopback, paired bootstrap summaries |
-| `benchmark_playback.py` (new) | Real fixed-PCM driver comparison and benchmark-only reuse probe |
-| `benchmark_recognition.py` (new) | Saved corpus, reference errors, VAD thresholds, thread/filter/wait-policy experiments |
+| `benchmarks/benchmark_voice.py` | Paired AB/BA comparisons, full warm-up turns, opt-in passive loopback, paired bootstrap summaries |
+| `benchmarks/benchmark_playback.py` (new) | Real fixed-PCM driver comparison and benchmark-only reuse probe |
+| `benchmarks/benchmark_recognition.py` (new) | Saved corpus, reference errors, VAD thresholds, thread/filter/wait-policy experiments |
 | `benchmarks/__init__.py`, `benchmarks/wasapi_loopback.py` (new) | Explicit native Windows capture helper; never loaded by normal operation |
 | `tests/test_voice_phase4.py` (new) | Stage accuracy, reuse, bounded options, fallback/no-replay, loopback parsing/opt-in, bootstrap accuracy |
 | `tests/test_voice_phase2.py` | Extend the existing replay regression to cover excluded warm-up turns |
@@ -195,25 +195,25 @@ $env:CAPRI_WHISPER_THREADS = '0'
 
 # Repeat the final paired real-engine/output experiment on the same saved PCM.
 # --audio explicitly plays replies; --loopback passively inspects the render mix.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --audio --loopback --compare-output-backend --profile --recording artifacts/performance/phase4_greeting.wav --question "Say hello briefly." --output artifacts/performance/phase4-local-paired.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --audio --loopback --compare-output-backend --profile --recording artifacts/performance/phase4_greeting.wav --question "Say hello briefly." --output artifacts/performance/phase4-local-paired.json
 
 # List devices; use the WASAPI index for the SAME physical endpoint, not blindly 22.
 .\.venv\Scripts\python.exe -m sounddevice
-.\.venv\Scripts\python.exe -B benchmark_playback.py --samples 20 --audio --loopback --wasapi-device 22 --recording artifacts/performance/phase3-quality-final/8/short.wav --output artifacts/performance/phase4-local-playback.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_playback --samples 20 --audio --loopback --wasapi-device 22 --recording artifacts/performance/phase3-quality-final/8/short.wav --output artifacts/performance/phase4-local-playback.json
 
 # Recognition and endpoint experiments; no microphone or playback.
-.\.venv\Scripts\python.exe -B benchmark_recognition.py --samples 20 --threads 2 4 8 --recognition --compare-filter --vad --output artifacts/performance/phase4-local-recognition.json
-.\.venv\Scripts\python.exe -B benchmark_recognition.py --samples 20 --threads 4 6 8 --fixtures short long --recognition --passive-wait --output artifacts/performance/phase4-local-passive.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_recognition --samples 20 --threads 2 4 8 --recognition --compare-filter --vad --output artifacts/performance/phase4-local-recognition.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_recognition --samples 20 --threads 4 6 8 --fixtures short long --recognition --passive-wait --output artifacts/performance/phase4-local-passive.json
 
 # Existing cancellation path, including actual driver abort. No microphone.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --interrupt --audio --profile --output artifacts/performance/phase4-local-interrupt.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --interrupt --audio --profile --output artifacts/performance/phase4-local-interrupt.json
 
 # Mock League API with real offscreen GUI, speech engines and output.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --warmup-turns 1 --replay --league-fixture --desktop-ui --audio --loopback --profile --output artifacts/performance/phase4-local-desktop.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --warmup-turns 1 --replay --league-fixture --companion --audio --loopback --profile --output artifacts/performance/phase4-local-companion.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --warmup-turns 1 --replay --league-fixture --desktop-ui --audio --loopback --profile --output artifacts/performance/phase4-local-desktop.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --warmup-turns 1 --replay --league-fixture --companion --audio --loopback --profile --output artifacts/performance/phase4-local-companion.json
 
 # Optional foreground/background model stress, generated image rather than screen capture.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --contention --model auto --output artifacts/performance/phase4-local-contention.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --contention --model auto --output artifacts/performance/phase4-local-contention.json
 
 # Production logging: collect >=20 real turns per desktop/champ-select/match scenario.
 $env:CAPRI_LATENCY_METRICS = '1'
@@ -234,11 +234,11 @@ For human validation, create a manifest with the following schema and supply 16-
 ]}
 ```
 
-Run `benchmark_recognition.py --samples 20 --manifest path\manifest.json --threads 4 --recognition --vad --output artifacts/performance/phase4-human.json`. Reference transcripts remain local; reports contain word-error counts rather than recognized speech.
+Run `python -B -m benchmarks.benchmark_recognition --samples 20 --manifest path\manifest.json --threads 4 --recognition --vad --output artifacts/performance/phase4-human.json`. Reference transcripts remain local; reports contain word-error counts rather than recognized speech.
 
 ### A/B listening and true acoustic validation
 
-Use exactly the same saved medium/long/emotional/champion-name PCM with `benchmark_playback.py --samples 1 --audio --wasapi-device <same-endpoint-index> --recording <fixture.wav> --output <report.json>`. It plays each driver once for warm-up and once for measurement, without changing voice text or volume. Listen for identity, names, emotional rhythm, missing/repeated words, clicks, transitions and recovery after interruption. No subjective listening score is claimed here. No-underflow counters alone do not prove absence of clicks or missing consonants.
+Use exactly the same saved medium/long/emotional/champion-name PCM with `python -B -m benchmarks.benchmark_playback --samples 1 --audio --wasapi-device <same-endpoint-index> --recording <fixture.wav> --output <report.json>`. It plays each driver once for warm-up and once for measurement, without changing voice text or volume. Listen for identity, names, emotional rhythm, missing/repeated words, clicks, transitions and recovery after interruption. No subjective listening score is claimed here. No-underflow counters alone do not prove absence of clicks or missing consonants.
 
 For actual speech-end-to-audible timing, record the user's utterance and Capri's speaker with an external recorder on one continuous clock. Use a calibrated near-speaker microphone/second channel when separation is needed. Disable recorder monitoring, noise gates and automatic gain that could shift onset; annotate both endpoints consistently. Account for microphone/speaker distances and channel skew. Constant recorder ADC delay cancels between markers on the same clock; this does not calibrate a host-QPC-to-acoustic one-way measurement.
 

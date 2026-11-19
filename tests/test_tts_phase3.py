@@ -194,7 +194,7 @@ def test_short_first_sentence_boundary_does_not_cut_abbreviations_decimals_or_fi
 
 
 def test_tts_benchmark_saves_actual_ordered_pcm_without_devices(tmp_path, monkeypatch):
-    import benchmark_tts
+    from benchmarks import benchmark_tts
     monkeypatch.setattr(config, "KOKORO_CPU_OPTIONS", "")
     monkeypatch.setattr(config, "KOKORO_NUM_THREADS", 4)
     monkeypatch.setattr(benchmark_tts.session, "shutdown", lambda: None)
@@ -217,8 +217,8 @@ def test_tts_benchmark_saves_actual_ordered_pcm_without_devices(tmp_path, monkey
 
 
 def test_benchmark_plain_control_does_not_override_requested_candidate(tmp_path, monkeypatch):
-    import benchmark_tts
-    import benchmark_voice
+    from benchmarks import benchmark_tts
+    from benchmarks import benchmark_voice
     import importlib.metadata
     from core import model_client
     options = tmp_path / "cpu.conf"

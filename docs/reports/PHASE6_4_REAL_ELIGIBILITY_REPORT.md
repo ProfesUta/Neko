@@ -54,7 +54,7 @@ Saving raw observations now makes the video-time breakdown measurable. In the th
 The existing paced replay benchmark was also run without audio or synthetic eligibility:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode replay --scenarios warwick,galio,overlap,two-enemies --trials 2 --warmups 0 --output artifacts\phase6_4\paced-real
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --mode replay --scenarios warwick,galio,overlap,two-enemies --trials 2 --warmups 0 --output artifacts\phase6_4\paced-real
 ```
 
 This is 16 runs: four real clips, two strict/adaptive pairs each, alternating order. It processed 444 frames at source cadence with **zero dropped or stale frames**, zero proposals/output starts, and zero capture-queue depth. Pooled processing p50/p95/p99/max: **21.03 / 49.97 / 55.86 / 59.62 ms**. Measured process-tree CPU was 11.36 seconds over 43.45 paced seconds (**26.15% of one core**), with sampled RSS at 79.50 MiB. Clips were predecoded into bounded RAM; decoding is not called Windows capture. This was detection-only, with neither concurrent Qwen/background vision nor game-FPS measurement. The paced tail is higher than the continuously running full-file tail; no causal speedup is claimed.
@@ -71,11 +71,11 @@ Environment: Windows build 26200, Python 3.11.6, OpenCV 5.0.0, NumPy 2.4.6, 16 l
 
 * `core/league_visual.py`: region naming and eligibility require explicit reviewed geometry. Eligibility recomputes containment and rejects ambiguous overlapping regions and unsupported/unknown lanes rather than trusting `in_assigned_lane` alone. The result distinguishes a verified assigned-lane region, another verified lane, unknown player position, and insufficient evidence. A verified assigned-lane observation may qualify without claiming measured distance to Yuumi. Proximity additionally requires a verified independent player position and a finite distance inside the calibrated radius.
 * The same file adds immutable `ReviewedPlayerPosition` inputs for explicitly reviewed **single recorded frames**. They must match the current frame time and session epoch, have valid normalized coordinates, and explicitly exclude attached-host inference. There is no interpolation, last-seen extension, or enemy path prediction. The normal live worker never supplies these offline points.
-* `core/league_visual_review.py` and `evaluate_league_vision.py`: new `prepare-review`, `review`, and `score-review` operations. A plan freezes video size/mtime, calibration SHA-256 and each cached reference SHA-256 before annotation. Disjoint tuning/held-out windows exclude prior audit intervals. Changing inputs invalidates the plan. Candidate confirmations cannot be imported as independent labels.
+* `core/league_visual_review.py` and `scripts/evaluate_league_vision.py`: new `prepare-review`, `review`, and `score-review` operations. A plan freezes video size/mtime, calibration SHA-256 and each cached reference SHA-256 before annotation. Disjoint tuning/held-out windows exclude prior audit intervals. Changing inputs invalidates the plan. Candidate confirmations cannot be imported as independent labels.
 * `gui/league_calibration.py`: the existing dialog/decoder gains blind frame stepping, enlarged cached minimap viewing, stable sighting episode IDs, explicit absence review, uncertainty exclusions, autosaved partial progress, and a separate explicit operator finalization. Predictions and reference editing are hidden/locked during blind review. Reviewing every planned sample is required, even when no enemy is present. Normal candidate review remains available separately.
 * The calibration dialog also records explicitly confirmed lane regions and exact-frame independent player points. Nothing is automatically marked human-verified. GUI state changes continue through the existing queued worker signals; there is no additional processing thread or polling timer.
 * `core/league_visual_evaluation.py`: saves raw observations alongside confirmed observations so first-detection delay can be scored; records location-evidence counts; reports missed episodes and wrong-identity frames; excludes wholly unknown frames from false-positive exposure time. Unknown frames cannot silently become true negatives.
-* `benchmark_league_vision_e2e.py` and `benchmarks/league_vision_e2e.py`: the existing replay whitelist now uses the same verified-geometry/proximity checks and can supply exact-frame player evidence. Export requires explicit sighting/location review. Reports add appearance→raw, raw→confirmation, confirmation→acceptance, acceptance→PCM and PCM→loopback pairs. Missing output remains missing. Synthetic controls remain explicitly isolated in the offline benchmark process.
+* `benchmarks/benchmark_league_vision_e2e.py` and `benchmarks/league_vision_e2e.py`: the existing replay whitelist now uses the same verified-geometry/proximity checks and can supply exact-frame player evidence. Export requires explicit sighting/location review. Reports add appearance→raw, raw→confirmation, confirmation→acceptance, acceptance→PCM and PCM→loopback pairs. Missing output remains missing. Synthetic controls remain explicitly isolated in the offline benchmark process.
 * `tests/test_league_visual_review.py`: new regression coverage for evidence boundaries, blind splits, negatives/exclusions, input changes, identity errors, player attachment/staleness, actual Qt frame loading, and missing audio timings. Existing fixtures in `tests/test_league_visual.py`, `tests/test_league_visual_delivery.py` and `tests/test_league_vision_e2e.py` now explicitly declare their synthetic reviewed-region evidence.
 
 No dependencies or environment configuration options were added. Existing runtime defaults remain `LEAGUE_VISION_ENABLED=False`, `LEAGUE_VISION_RIOT_APPROVED=False`, strict3 confirmation, 10 Hz, and a 0.35-second maximum frame age. Phase 6.3's cooperative cancellation/warm worker is untouched.
@@ -87,7 +87,7 @@ The prepared private plan is `data/league-vision/phase6_4-blind-review/plan.json
 From PowerShell in `F:\Neko`:
 
 ```powershell
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py review --plan data\league-vision\phase6_4-blind-review\plan.json --window window-4
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision review --plan data\league-vision\phase6_4-blind-review\plan.json --window window-4
 ```
 
 Repeat for window-5 and window-6 to complete held-out coverage; window-1 through window-3 are the separate tuning split. Click each visible enemy icon, enter its exact champion and a stable episode ID, and add its label. Reuse that ID only while the same sighting is genuinely continuous. Label every enemy on a frame before marking it reviewed. When none is visible, explicitly mark the frame reviewed without inventing a positive. Exclude an uncertain/obscured minimap frame instead of assuming absence. Verify onset against preceding absence or leave onset unknown. Finalize only after independent inspection; the tool records an operator attestation, not an externally authenticated reviewer identity.
@@ -97,9 +97,9 @@ The sampling grid cannot establish that no transient icon appeared between 10 Hz
 To generate a new plan later, use a **new** output directory:
 
 ```powershell
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py prepare-review --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --output data\league-vision\phase6_4-new-review --windows-per-split 3 --seconds 3 --exclude-labels data\league-vision\real-tuning-final-labels.json --exclude-labels data\league-vision\real-heldout-final-labels.json --exclude-labels data\league-vision\real-warwick-final-labels.json
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py detect tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --output artifacts\phase6_4\new-detection
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py score-review artifacts\phase6_4\new-detection\detections.json --plan data\league-vision\phase6_4-new-review\plan.json --split heldout --output artifacts\phase6_4\new-heldout-score.json
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision prepare-review --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --output data\league-vision\phase6_4-new-review --windows-per-split 3 --seconds 3 --exclude-labels data\league-vision\real-tuning-final-labels.json --exclude-labels data\league-vision\real-heldout-final-labels.json --exclude-labels data\league-vision\real-warwick-final-labels.json
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision detect tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --output artifacts\phase6_4\new-detection
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision score-review artifacts\phase6_4\new-detection\detections.json --plan data\league-vision\phase6_4-new-review\plan.json --split heldout --output artifacts\phase6_4\new-heldout-score.json
 ```
 
 Keep tuning results separate. Do not retune against held-out labels and then describe them as untouched validation.
@@ -107,7 +107,7 @@ Keep tuning results separate. Do not retune against held-out labels and then des
 ## Calibrating genuine replay eligibility and speech
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py calibrate
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e calibrate
 ```
 
 This opens a separate copied benchmark calibration, preserving the frozen detection profile. Load the relevant recorded frames. Select **Lane region**, draw a tight area that is visibly and independently identified as the actual bottom lane, name it, choose BOTTOM, and explicitly tick the region-verification checkbox before drawing. Do not include river/jungle/other lanes just to make a candidate qualify. Several small rectangles are safer than a broad diagonal lane approximation; overlapping regions are deliberately ambiguous.
@@ -117,8 +117,8 @@ Add/load actual sighting labels, including enough continuously verified frames t
 After genuine eligible labels exist, with other output audio paused:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py preflight --audio --loopback
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode replay --scenarios verified --trials 20 --warmups 1 --audio --loopback --calibration data\league-vision\e2e-eligibility-calibration.json --manifest data\league-vision\e2e-eligibility.json --output artifacts\phase6_4\verified-audio
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e preflight --audio --loopback
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --mode replay --scenarios verified --trials 20 --warmups 1 --audio --loopback --calibration data\league-vision\e2e-eligibility-calibration.json --manifest data\league-vision\e2e-eligibility.json --output artifacts\phase6_4\verified-audio
 ```
 
 `--verified-index` selects another exported sighting. The benchmark alternates strict/adaptive order and reuses Capri's actual AdviceWorker/Kokoro/WASAPI path. Continuous current visibility, freshness, cooldowns, one pending slot and user priority still apply. A one-frame whitelist that disappears during synthesis is correctly cancelled, not extended to force speech. Repeated replays are latency samples, not new independent examples.
@@ -191,14 +191,14 @@ Reproduce with the saved private assistant-review manifest, keeping other output
 ```powershell
 $env:CAPRI_LEAGUE_VISION = "0"
 $env:CAPRI_LEAGUE_VISION_APPROVED = "0"
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode replay --scenarios verified --assistant-reviewed --eligibility verified --trials 20 --warmups 1 --audio --loopback --calibration data\league-vision\phase6_4-assistant-review\audio-calibration.json --manifest data\league-vision\phase6_4-assistant-review\audio-eligibility.json --output artifacts\phase6_4\assistant-audio\repeat-02
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --mode replay --scenarios verified --assistant-reviewed --eligibility verified --trials 20 --warmups 1 --audio --loopback --calibration data\league-vision\phase6_4-assistant-review\audio-calibration.json --manifest data\league-vision\phase6_4-assistant-review\audio-eligibility.json --output artifacts\phase6_4\assistant-audio\repeat-02
 ```
 
 The measured run is `artifacts/phase6_4/assistant-audio/warm-20-pairs/{report.json,trials.csv}`. Source video times and monotonic runtime stages are retained separately. Use a fresh output directory on subsequent runs.
 
 ### Focused code changes for honest provenance
 
-Only `benchmark_league_vision_e2e.py`, `benchmarks/league_vision_e2e.py`, `tests/test_league_vision_e2e.py`, and this report changed. The new `--assistant-reviewed` option explicitly admits an `assistant_reviewed_replay_eligibility` manifest with `independent_human_review: false` in recorded-frame replay. It is rejected for captured-window mode and synthetic eligibility. Without the flag, the previous operator-confirmation requirement remains. Live workers never call the benchmark region-admission method and retain their approval checks. No production detector, TTS, voice, GUI or configuration code changed.
+Only `benchmarks/benchmark_league_vision_e2e.py`, `benchmarks/league_vision_e2e.py`, `tests/test_league_vision_e2e.py`, and this report changed. The new `--assistant-reviewed` option explicitly admits an `assistant_reviewed_replay_eligibility` manifest with `independent_human_review: false` in recorded-frame replay. It is rejected for captured-window mode and synthetic eligibility. Without the flag, the previous operator-confirmation requirement remains. Live workers never call the benchmark region-admission method and retain their approval checks. No production detector, TTS, voice, GUI or configuration code changed.
 
 Six new regression cases cover default rejection of assistant manifests, explicit scoped admission, rejection of human-review misrepresentation, unchanged production-region validation, and restricted CLI modes. The targeted vision/review suite passed **59 tests** before audio measurement. The complete suite subsequently passed **943 tests in 138.52 seconds**, with no failures. Tests were run separately from the measured audio trials.
 

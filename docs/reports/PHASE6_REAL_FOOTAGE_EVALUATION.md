@@ -68,8 +68,8 @@ Full final decode/analysis consumed 135.00 CPU seconds over 135.18 wall seconds 
 | `core/league_replay.py` | Validated optional cached reference/frame smoothing |
 | `core/league_visual.py` | Share prepared pixels across all champion comparisons |
 | `core/league_visual_evaluation.py` | Explicit bounded lossless cache, identical-pixel reruns, disjoint reviewed windows, ignored regions, champion scope, per-champion scoring, onset provenance/grouping, CPU/timing output |
-| `evaluate_league_vision.py` | Opt-in `--cache-minimap` and explicit equivalent-geometry annotation reuse |
-| `benchmark_league.py` | Reuse the existing benchmark entry point for cached real-footage comparisons |
+| `scripts/evaluate_league_vision.py` | Opt-in `--cache-minimap` and explicit equivalent-geometry annotation reuse |
+| `benchmarks/benchmark_league.py` | Reuse the existing benchmark entry point for cached real-footage comparisons |
 | `gui/league_calibration.py` | Do not infer onset from a confirmation frame; retain disjoint coverage when saving |
 | `examples/league-vision-calibration.json` | Document disabled-by-default smoothing |
 | `tests/test_league_visual.py`, `tests/test_league_vision_cli.py` | Cache parity/cancellation/validation, privacy defaults, geometry/cadence, label scope/latency, smoothing/input preservation and CLI regressions |
@@ -83,19 +83,19 @@ The local ignored `data/league-vision/calibration.json` now uses the evaluated s
 
 ```powershell
 # View final candidates and primary audit labels; inspect missed sightings as well.
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py label --detections "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-heldout-final-labels.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision label --detections "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-heldout-final-labels.json"
 
 # Review Warwick separately, without treating other champions as labelled negatives.
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py label --detections "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-warwick-final-labels.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision label --detections "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-warwick-final-labels.json"
 
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py evaluate "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-heldout-final-labels.json" --output "artifacts\phase6\primary-local-score.json"
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py evaluate "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6\warwick-local-score.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision evaluate "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-heldout-final-labels.json" --output "artifacts\phase6\primary-local-score.json"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision evaluate "data\league-vision\real-evaluation-final\detections.json" --labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6\warwick-local-score.json"
 
 # Rerun actual matching against identical lossless recording pixels. Use a fresh output folder each run.
-.\.venv\Scripts\python.exe -B benchmark_league.py --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-repeat-01" --output "artifacts\phase6\local-repeat-01.json"
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-repeat-01" --output "artifacts\phase6\local-repeat-01.json"
 
 # Fully decode the video again. --cache-minimap is optional and explicitly saves cropped private pixels (max 1 GiB).
-.\.venv\Scripts\python.exe -B evaluate_league_vision.py detect "tests\fixtures\league_real_gameplay.mp4" --calibration "data\league-vision\calibration.json" --output "data\league-vision\local-video-repeat-01"
+.\.venv\Scripts\python.exe -B -m scripts.evaluate_league_vision detect "tests\fixtures\league_real_gameplay.mp4" --calibration "data\league-vision\calibration.json" --output "data\league-vision\local-video-repeat-01"
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 ```
 

@@ -278,7 +278,7 @@ def compare_quality(before, after):
     import re
     from voice import voice
     from voice.pronunciation import prepare_kokoro_text
-    from benchmark_voice import read_recording
+    from benchmarks.benchmark_voice import read_recording
     voice.load_models()
     def tokens(text):
         return re.findall(r"\w+", text.casefold())
@@ -385,7 +385,7 @@ def main():
     if args.plain_cpu or str(options).casefold() == "none":
         options = ""
     import importlib.metadata
-    from benchmark_voice import hardware
+    from benchmarks.benchmark_voice import hardware
     result = {"kind": "real installed CPU Kokoro, fixed fixtures; no microphone", "samples": args.samples,
               "speaker": config.KOKORO_SPEAKER_ID, "speed": config.KOKORO_SPEED, "logical_cpus": os.cpu_count(), "runs": []}
     result["hardware"] = hardware()

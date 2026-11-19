@@ -133,9 +133,9 @@ Run in PowerShell from the project root:
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 10 --tts --ollama --contention --replay --profile --output artifacts/performance/local_voice.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 3 --ollama --model qwen2.5:32b --output artifacts/performance/local_qwen32.json
-.\.venv\Scripts\python.exe -B benchmark_league.py --live --seconds 10 --output artifacts/performance/local_league.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 10 --tts --ollama --contention --replay --profile --output artifacts/performance/local_voice.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 3 --ollama --model qwen2.5:32b --output artifacts/performance/local_qwen32.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --live --seconds 10 --output artifacts/performance/local_league.json
 ```
 
 Run benchmarks serially, without the test suite running alongside them. Replay uses a temporary empty memory database, generated test speech and no microphone/speaker. Contention uses a generated image, never the desktop. `--audio` explicitly permits speaker playback of the fixed test line; omit it for silent measurements. A first request is cold only if the selected model is not already resident; residency is included in the JSON.
@@ -173,8 +173,8 @@ Keep MIC OFF to verify that League/proactive replies still speak. With a running
 | `voice/kokoro_session.py` | Bounded native messages, callback delivery, shutdown and profile results |
 | `voice/playback.py` (new) | Reused device stream, ordered PCM, DAC timestamps and cancellation |
 | `voice/capture.py` (new) | Optional latest-utterance capture during speech |
-| `benchmark_voice.py` (new) | Silent fixtures, real TTS/Ollama, paced speech replay, contention and optional output |
-| `benchmark_league.py` | Additional wall/CPU reporting with the existing polling comparisons |
+| `benchmarks/benchmark_voice.py` (new) | Silent fixtures, real TTS/Ollama, paced speech replay, contention and optional output |
+| `benchmarks/benchmark_league.py` | Additional wall/CPU reporting with the existing polling comparisons |
 | `tests/conftest.py` | Isolated scheduler/transport state and explicit native-feature opt-ins |
 | `tests/test_tts.py` | Updated device cancellation coverage without real speaker I/O |
 | `tests/test_voice_performance.py` (new) | Metrics, pool reuse, scheduling, streaming, interruptions, devices and shutdown regressions |

@@ -135,7 +135,7 @@ No production cancellation policy was changed or hidden by increasing notificati
 
 | File | Purpose |
 |---|---|
-| `benchmark_league_vision_e2e.py` | CLI, private calibration workflow, paced paired trials, device/environment metadata, optional scoped accuracy evaluation |
+| `benchmarks/benchmark_league_vision_e2e.py` | CLI, private calibration workflow, paced paired trials, device/environment metadata, optional scoped accuracy evaluation |
 | `benchmarks/league_vision_e2e.py` | Existing detector/notification/worker orchestration, source-clock correlation, lifecycle cases, per-trial CSV/JSON, bounded source storage and resource accounting |
 | `benchmarks/league_replay_window.py` | Own-process offline replay window and guarded existing-capture adapter |
 | `benchmarks/league_e2e_workload.py` | Optional finite NVIDIA sampling and existing-client model load, shut down with the benchmark |
@@ -160,37 +160,37 @@ Keep other output quiet; run performance jobs serially, apart from pytest. Each 
 
 ```powershell
 Set-Location F:\Neko
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py preflight --audio --loopback --output artifacts\phase6_2\preflight-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e preflight --audio --loopback --output artifacts\phase6_2\preflight-local
 
 # Real pixels, unmodified verified-eligibility checks; correctly silent without a confirmed manifest.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --scenarios warwick,galio,overlap,two-enemies --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\recorded-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --scenarios warwick,galio,overlap,two-enemies --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\recorded-local
 
 # Clearly synthetic eligibility + actual detector/Kokoro/WASAPI, not real warning accuracy.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --scenarios synthetic --trials 20 --warmups 1 --audio --loopback --output artifacts\phase6_2\audio-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --scenarios synthetic --trials 20 --warmups 1 --audio --loopback --output artifacts\phase6_2\audio-local
 
 # Requires an interactive visible desktop; Escape closes the offline replay window.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode window --scenarios warwick --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\window-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --mode window --scenarios warwick --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\window-local
 
 # Explicit model load comparison, after Ollama is available. Run once without this flag as the control.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --scenarios synthetic --trials 20 --warmups 1 --audio --loopback --gpu-metrics --contention --output artifacts\phase6_2\contention-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --scenarios synthetic --trials 20 --warmups 1 --audio --loopback --gpu-metrics --contention --output artifacts\phase6_2\contention-local
 
 # Real-engine safety cases; continuous visibility runs beyond the notification cooldown.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --scenarios disappear,new-match,already-speaking,interrupt,continuous --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\safety-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --scenarios disappear,new-match,already-speaking,interrupt,continuous --trials 20 --warmups 1 --audio --loopback --gpu-metrics --output artifacts\phase6_2\safety-local
 ```
 
 To establish genuine eligibility, launch the existing calibration UI through the benchmark:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py calibrate --manifest data\league-vision\e2e-eligibility.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e calibrate --manifest data\league-vision\e2e-eligibility.json
 ```
 
 It works on a separate `e2e-eligibility-calibration.json` copy. Load/inspect source frames, draw the **actual** named assigned-lane region, manually label visible intervals and icon centers, select reviewed label rows, then explicitly export eligibility. Minimap labels require the actual assigned-lane region; viewport labels require the existing calibrated viewport evidence. Do not mark the entire map as nearby or infer Yuumi's position. The whitelist is tied to the recording fingerprint and calibration SHA; changing either invalidates it. No operator manifest was fabricated during this task.
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --calibration data\league-vision\e2e-eligibility-calibration.json --manifest data\league-vision\e2e-eligibility.json --scenarios verified --verified-index 0 --trials 20 --warmups 1 --audio --loopback --output artifacts\phase6_2\verified-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --calibration data\league-vision\e2e-eligibility-calibration.json --manifest data\league-vision\e2e-eligibility.json --scenarios verified --verified-index 0 --trials 20 --warmups 1 --audio --loopback --output artifacts\phase6_2\verified-local
 
 # Optional existing scoped labels; score unique sampled source frames once, preserving unknown/excluded areas.
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --scenarios warwick,galio,overlap,two-enemies --trials 1 --warmups 0 --labels data\league-vision\real-heldout-final-labels.json data\league-vision\real-warwick-final-labels.json --output artifacts\phase6_2\accuracy-local
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --scenarios warwick,galio,overlap,two-enemies --trials 1 --warmups 0 --labels data\league-vision\real-heldout-final-labels.json data\league-vision\real-warwick-final-labels.json --output artifacts\phase6_2\accuracy-local
 
 .\.venv\Scripts\python.exe -B -m pytest -q
 ```

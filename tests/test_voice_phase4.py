@@ -196,8 +196,8 @@ def test_loopback_probe_is_opt_in_and_rejects_noisy_output_before_arming(monkeyp
 
 
 def test_fixed_seed_paired_confidence_interval_and_reference_word_errors():
-    from benchmark_playback import paired_interval
-    from benchmark_recognition import edit_distance, words
+    from benchmarks.benchmark_playback import paired_interval
+    from benchmarks.benchmark_recognition import edit_distance, words
     assert paired_interval([20] * 20, [10] * 20)["bootstrap_95_percent_interval_ms"] == [10, 10]
     assert edit_distance(words("All the words"), words("all words")) == 1
     assert edit_distance([], words("invented speech")) == 2

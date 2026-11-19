@@ -112,7 +112,7 @@ Offline raw/confirmation times use video timestamps; runtime intervals use high-
 | `gui/workers.py`, `gui/window.py` | Actual playback-start acknowledgement, cancellation propagation, late-callback protection, defer visual chat publication until speech starts |
 | `core/league_capture.py`, `core/latency.py` | Optional numeric capture and detection-to-speech stage marks |
 | `core/league_visual_evaluation.py` | Same-raw policy replay, scoped raw/confirmation scoring, no-audio scheduling simulation |
-| `benchmark_league.py` | Pinned old/new paired timing, separate reference ablations, actual/controlled notification simulations |
+| `benchmarks/benchmark_league.py` | Pinned old/new paired timing, separate reference ablations, actual/controlled notification simulations |
 | `examples/league-vision-calibration.json` | Explicit `confirmation_policy: "strict3"` default |
 | `tests/test_league_visual_delivery.py`, `tests/test_league_visual.py`, `tests/test_league_replay.py` | Delivery/queue/race/freshness/epoch/attachment/geometry/overlap/timing/scope/NCC regression coverage |
 | This report | Results, tradeoffs, reproduction and limitations |
@@ -135,17 +135,17 @@ Run timing benchmarks separately from tests/other benchmark jobs. Use fresh outp
 $baseline = "b9ed7e7b6ac9d9db61e7f7f4e183b0bd5547529a"
 
 # Paired full detector processing on identical real cached pixels.
-.\.venv\Scripts\python.exe -B benchmark_league.py --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-paired-01" --paired-vision-baseline $baseline --output "artifacts\phase6_1\local-paired-01.json"
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-paired-01" --paired-vision-baseline $baseline --output "artifacts\phase6_1\local-paired-01.json"
 
 # One actual CV pass; replay exactly the same raw observations through A/B/C.
-.\.venv\Scripts\python.exe -B benchmark_league.py --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-policies-01" --confirmation-policies --vision-labels "data\league-vision\real-tuning-final-labels.json" --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-policies-01.json"
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-policies-01" --confirmation-policies --vision-labels "data\league-vision\real-tuning-final-labels.json" --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-policies-01.json"
 
 # No-audio actual/controlled scheduling and a synthetic continuous-sighting fixture.
-.\.venv\Scripts\python.exe -B benchmark_league.py --real-vision-report "data\league-vision\local-policies-01\strict3\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-notifications-01" --simulate-notifications --notification-baseline-revision $baseline --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-notifications-01.json"
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --real-vision-report "data\league-vision\local-policies-01\strict3\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-notifications-01" --simulate-notifications --notification-baseline-revision $baseline --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-notifications-01.json"
 # Add --simulated-user-busy for the documented interruption scenarios.
 
 # Separate local reference variants; working references are not overwritten.
-.\.venv\Scripts\python.exe -B benchmark_league.py --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-variants-01" --reference-variants "data\league-vision\phase6_1-reference-variants.json" --vision-labels "data\league-vision\real-tuning-final-labels.json" --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-variants-01.json"
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --real-vision-report "data\league-vision\real-evaluation-baseline\detections.json" --real-vision-calibration "data\league-vision\evaluation-final-calibration.json" --real-vision-output "data\league-vision\local-variants-01" --reference-variants "data\league-vision\phase6_1-reference-variants.json" --vision-labels "data\league-vision\real-tuning-final-labels.json" --vision-labels "data\league-vision\real-heldout-final-labels.json" --vision-labels "data\league-vision\real-warwick-final-labels.json" --output "artifacts\phase6_1\local-variants-01.json"
 
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 ```

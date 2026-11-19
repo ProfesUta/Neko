@@ -19,7 +19,7 @@ These are real installed CPU/GPU engine measurements on fixed fixtures, not simu
 | Emotional reply | 653.71 / 678.75 / 678.75 / 679.62 | 446.91 / 465.85 / 465.85 / 470.06 | 31.64% | 20 / 20 |
 | Champion-name pronunciation fixture | 1217.62 / 1275.70 / 1275.70 / 1290.91 | 856.05 / 870.32 / 870.32 / 878.05 | 29.70% | 20 / 20 |
 
-Raw results: [phase3_final_tts.json](artifacts/performance/phase3_final_tts.json). Fixture text is in `benchmark_tts.py`. Total generation of the long fixture fell from 3000.02 to 2017.13 ms median; playback duration is determined by the voice and was not accelerated.
+Raw results: [phase3_final_tts.json](../../artifacts/performance/phase3_final_tts.json). Fixture text is in `benchmarks/benchmark_tts.py`. Total generation of the long fixture fell from 3000.02 to 2017.13 ms median; playback duration is determined by the voice and was not accelerated.
 
 | First-audio variance, ms squared | Before | After |
 |---|---:|---:|
@@ -45,7 +45,7 @@ The existing Phase 2 replay harness used the same question, VAD settings, model 
 
 End-to-end p99 was 3434.16 before and 3017.54 after; **maximum worsened** from 3981.61 to 4420.51 ms. A slow initial model request remained possible (after TTFT max 1020.54 ms). Stage percentiles overlap and must not be added. The 17% replay result is not entirely attributable to TTS, because model timing also varied. The isolated matched TTS fixtures provide the stronger evidence for the CPU setting.
 
-The earlier Phase 2 report's approximately 2468 ms replay and 946 ms TTS measurements are historical, different cohorts. They were not used as the “before” values in this report. Raw current cohorts: [before](artifacts/performance/phase3_before.json), [after](artifacts/performance/phase3_after.json).
+The earlier Phase 2 report's approximately 2468 ms replay and 946 ms TTS measurements are historical, different cohorts. They were not used as the “before” values in this report. Raw current cohorts: [before](../../artifacts/performance/phase3_before.json), [after](../../artifacts/performance/phase3_after.json).
 
 ## Where Kokoro spends time
 
@@ -64,7 +64,7 @@ Medium fixture, 20 warm samples per setting:
 | WAV closed to decoded IPC message in parent | 0.120 / 0.128 | 0.107 / 0.271 |
 | Parent reader queue to chunk handling | 0.049 / 0.062 | 0.065 / 0.196 |
 
-`generate()` entry includes the C++ text frontend; it is not mislabeled as the first neural kernel. A separate two-generation ONNX Runtime profiling diagnostic recorded model runs of **719.885 and 711.623 ms**, versus native generation wall times of 724.295 and 714.925 ms. It confirms neural execution dominates this fixture. Convolution and sine operators were the largest aggregate operator categories. That diagnostic includes profiler overhead and is not a 20-sample benchmark or directly aligned kernel timestamp on the Python clock. See [operator summary](artifacts/performance/phase3_operator_summary.json).
+`generate()` entry includes the C++ text frontend; it is not mislabeled as the first neural kernel. A separate two-generation ONNX Runtime profiling diagnostic recorded model runs of **719.885 and 711.623 ms**, versus native generation wall times of 724.295 and 714.925 ms. It confirms neural execution dominates this fixture. Convolution and sine operators were the largest aggregate operator categories. That diagnostic includes profiler overhead and is not a 20-sample benchmark or directly aligned kernel timestamp on the Python clock. See [operator summary](../../artifacts/performance/phase3_operator_summary.json).
 
 The approximately 14 ms WAV stage is roughly 1–2% of these first-audio times; pipe delivery and PCM conversion are much smaller. Replacing it with binary IPC/shared memory would add cancellation and ownership complexity for a small maximum gain. **WAV transport, sample format, native callbacks, bounded message queues and ownership cleanup were retained.**
 
@@ -80,7 +80,7 @@ Plain CPU thread sweep, identical warm medium fixture, 20 samples each:
 | 6 | 950.03 / 984.24 / 984.24 / 989.76 |
 | 8 | 932.62 / 963.20 / 963.20 / 981.83 |
 
-The same sweep also measured short, long and League fixtures: [thread results](artifacts/performance/phase3_threads.json). Exploratory four-thread runs found dynamic blocks alone gave no meaningful improvement; disabling spin reduced CPU time, and combining both was stable. Eight threads with those options outperformed six in the subsequent controlled idle and active-generation tests.
+The same sweep also measured short, long and League fixtures: [thread results](../../artifacts/performance/phase3_threads.json). Exploratory four-thread runs found dynamic blocks alone gave no meaningful improvement; disabling spin reduced CPU time, and combining both was stable. Eight threads with those options outperformed six in the subsequent controlled idle and active-generation tests.
 
 The options file contains only:
 
@@ -103,9 +103,9 @@ Controlled real-model load, medium fixture, 20 measured samples per row. Every s
 | Qwen2.5VL:7B vision | Tuned 6 | 926.08 / 942.30 / 942.30 / 955.28 |
 | Qwen2.5VL:7B vision | Tuned 8 | 820.86 / 836.69 / 836.69 / 838.50 |
 
-Raw: [Qwen load](artifacts/performance/phase3_qwen_active.json), [vision load](artifacts/performance/phase3_vision_active.json). The stress harness deliberately bypasses Capri's admission gate using generated imagery, not private screen capture. No active League match or game frame-rate measurement was available.
+Raw: [Qwen load](../../artifacts/performance/phase3_qwen_active.json), [vision load](../../artifacts/performance/phase3_vision_active.json). The stress harness deliberately bypasses Capri's admission gate using generated imagery, not private screen capture. No active League match or game frame-rate measurement was available.
 
-A separate [dual-request thread sweep](artifacts/performance/phase3_stress_threads.json) issued both models concurrently, but Ollama queued/swapped them on the 12 GiB card. Active decode coverage differed across settings, so it is **not** evidence of simultaneously resident GPU inference or a fair ranking under identical load. No GPU runtime was installed or enabled.
+A separate [dual-request thread sweep](../../artifacts/performance/phase3_stress_threads.json) issued both models concurrently, but Ollama queued/swapped them on the 12 GiB card. Active decode coverage differed across settings, so it is **not** evidence of simultaneously resident GPU inference or a fair ranking under identical load. No GPU runtime was installed or enabled.
 
 Eight tuned threads use more cores briefly: medium native synthesis averaged approximately **5.02 core equivalents (31.4% of this 16-thread host)** versus 3.97 (24.8%) before. Median native CPU time per medium utterance fell from 4.703 to 3.953 CPU-seconds, and wall time from 1185.70 to 787.50 ms. Long utterance CPU time fell from 11.969 to 10.313 CPU-seconds. These are process CPU-time/wall ratios, not a system-wide utilization trace or proof of unaffected game FPS.
 
@@ -128,13 +128,13 @@ Playback now queues its first PCM job **before** opening/starting PortAudio, fix
 
 The buffer sweep tested host-selected, 5, 10 and 20 ms blocks, 20 trials each. Opening the default device took approximately 12 ms median; all silent cases recorded zero underflows. The existing **10 ms** production block remains: the smaller-buffer evidence used silence, not speech under game load. A priming experiment submitted buffers at 12.06 ms median, but all 20 initial callbacks lacked usable DAC clocks; **no presentation improvement is claimed and priming was not enabled**. [PortAudio documents priming as initial buffer filling](https://portaudio.com/docs/proposals/020-AllowCallbackToPrimeStream.html), which is distinct from audible playback.
 
-Optional metrics distinguish PCM decoding, playback queue entry, stream opening/start, actual output callbacks, underflows, inter-chunk empty frames, non-silent buffer submission and PortAudio's first non-silent DAC estimate. The audio callback only updates small numeric counters/a bounded deque; aggregation, locks in the metrics collector and reporting stay off that callback. First non-silent physical playback and acoustic clicks were **not measured** in these silent runs. See [buffer results](artifacts/performance/phase3_playback.json) and [checked priming experiment](artifacts/performance/phase3_priming_checked.json).
+Optional metrics distinguish PCM decoding, playback queue entry, stream opening/start, actual output callbacks, underflows, inter-chunk empty frames, non-silent buffer submission and PortAudio's first non-silent DAC estimate. The audio callback only updates small numeric counters/a bounded deque; aggregation, locks in the metrics collector and reporting stay off that callback. First non-silent physical playback and acoustic clicks were **not measured** in these silent runs. See [buffer results](../../artifacts/performance/phase3_playback.json) and [checked priming experiment](../../artifacts/performance/phase3_priming_checked.json).
 
 ## Speech quality, interruption and compatibility
 
 Saved A/B speech retains the same rate, voice, dictionary and text. Signal checks found no clipping or non-finite samples. Five of six CPU-comparison fixtures produced identical normalized Whisper words. The name fixture differed in ASR's spelling of Jarvan; the earlier-sentence experiment differed in ASR's spelling of Yuumi. Both variants retained the same recognized word counts. The long fixture produced 21 ASR words against 23 reference words in both settings, so ASR is explicitly **not proof of perfect pronunciation or absence of omissions**. Timing/duration checks and automated text/audio ordering tests add evidence, but cannot replace listening for rhythm, identity, clicks or name pronunciation.
 
-No human listening or acoustic validation is claimed. Listen to the saved baseline and optimized WAVs before judging subjective quality: `artifacts/performance/phase3-quality-final/control`, `8`, `dispatch-0` and `dispatch-20`. The CPU comparison changes scheduling only; small stochastic waveform differences existed even between repeated baseline generations. [Signal/ASR comparison](artifacts/performance/phase3_quality.json), [sentence-boundary comparison](artifacts/performance/phase3_dispatch_quality.json).
+No human listening or acoustic validation is claimed. Listen to the saved baseline and optimized WAVs before judging subjective quality: `artifacts/performance/phase3-quality-final/control`, `8`, `dispatch-0` and `dispatch-20`. The CPU comparison changes scheduling only; small stochastic waveform differences existed even between repeated baseline generations. [Signal/ASR comparison](../../artifacts/performance/phase3_quality.json), [sentence-boundary comparison](../../artifacts/performance/phase3_dispatch_quality.json).
 
 Real cancellation, 20 samples each, no speaker output:
 
@@ -145,7 +145,7 @@ Real cancellation, 20 samples each, no speaker output:
 | Ongoing generation to generator released | 2.72 / 6.07 / 6.07 / 6.86 | 0 / 20, intentional termination |
 | Ongoing generation to next worker ready | 1639.22 / 1706.59 / 1706.59 / 1764.08 | Reload required |
 
-The Phase 2 completion-ack drain remains bounded at 50 ms and is still restricted to actual final chunks. Its historical 2.70 ms median ready time is not replaced by a claim that this cohort is faster. Ongoing synthesis still stops immediately instead of waiting for the network or full utterance. Physical sound cessation remains unmeasured. [Cancellation results](artifacts/performance/phase3_cancellation.json).
+The Phase 2 completion-ack drain remains bounded at 50 ms and is still restricted to actual final chunks. Its historical 2.70 ms median ready time is not replaced by a claim that this cohort is faster. Ongoing synthesis still stops immediately instead of waiting for the network or full utterance. Physical sound cessation remains unmeasured. [Cancellation results](../../artifacts/performance/phase3_cancellation.json).
 
 ## Files and configuration
 
@@ -162,7 +162,7 @@ Phase 3 changes, relative to the preserved Phase 2 source:
 | `core/latency.py` | Bounded numeric counters and stage relationships |
 | `core/streaming.py` | Earlier complete first sentence with abbreviation guards |
 | `gui/workers.py` | Pass the threshold to the existing speech pipeline; no League changes |
-| `benchmark_tts.py` (new) | CPU sweeps, matched controls, load gating, saved A/B audio, silent driver probes, optional playback/loopback cue |
+| `benchmarks/benchmark_tts.py` (new) | CPU sweeps, matched controls, load gating, saved A/B audio, silent driver probes, optional playback/loopback cue |
 | `tests/test_tts_phase3.py` (new) | Native timing, disabled-profile overhead, CPU fallbacks, PCM ordering/startup, natural boundaries and benchmark regressions |
 | `PHASE3_TTS_PERFORMANCE_REPORT.md` (new) | Measurements, limitations and reproduction instructions |
 | `PERFORMANCE_REPORT.md` | Link the current TTS report while retaining the earlier results |
@@ -201,27 +201,27 @@ $env:CAPRI_TTS_CPU_OPTIONS = 'F:\Neko\voice\kokoro_cpu.conf'
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 
 # Match the isolated before/after TTS comparison; silent, 20 warm samples each.
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --threads 8 --plain-control --fixtures short medium long league emotional names --cpu-options voice/kokoro_cpu.conf --save-audio artifacts/performance/phase3-local-audio --dispatch --output artifacts/performance/phase3-local-tts.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --threads 8 --plain-control --fixtures short medium long league emotional names --cpu-options voice/kokoro_cpu.conf --save-audio artifacts/performance/phase3-local-audio --dispatch --output artifacts/performance/phase3-local-tts.json
 
 # Original CPU thread sweep, then the tuned sweep.
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --threads 1 2 4 6 8 --plain-cpu --fixtures short medium long league --output artifacts/performance/phase3-local-plain.json
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --threads 1 2 4 6 8 --fixtures medium --output artifacts/performance/phase3-local-tuned.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --threads 1 2 4 6 8 --plain-cpu --fixtures short medium long league --output artifacts/performance/phase3-local-plain.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --threads 1 2 4 6 8 --fixtures medium --output artifacts/performance/phase3-local-tuned.json
 
 # Real model load; run these separately, not simultaneously with other tests.
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --threads 6 8 --plain-control --fixtures medium --stress --stress-models qwen2.5:32b --output artifacts/performance/phase3-local-qwen.json
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --threads 6 8 --plain-control --fixtures medium --stress --stress-models qwen2.5vl:7b --output artifacts/performance/phase3-local-vision.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --threads 6 8 --plain-control --fixtures medium --stress --stress-models qwen2.5:32b --output artifacts/performance/phase3-local-qwen.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --threads 6 8 --plain-control --fixtures medium --stress --stress-models qwen2.5vl:7b --output artifacts/performance/phase3-local-vision.json
 
 # Same end-to-end replay and cancellation probes used in this report.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --tts --replay --profile --output artifacts/performance/phase3-local-replay.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --interrupt --output artifacts/performance/phase3-local-cancel.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --tts --replay --profile --output artifacts/performance/phase3-local-replay.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --interrupt --output artifacts/performance/phase3-local-cancel.json
 
 # Existing optional UI scenarios: real engines, mocked League API, no microphone.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --league-fixture --companion --profile --output artifacts/performance/phase3-local-companion.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --league-fixture --desktop-ui --profile --output artifacts/performance/phase3-local-desktop.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --league-fixture --companion --profile --output artifacts/performance/phase3-local-companion.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --league-fixture --desktop-ui --profile --output artifacts/performance/phase3-local-desktop.json
 
 # Silent real audio-device probe; add --audio only to explicitly play speech.
-.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 20 --fixtures short --silent-playback --output artifacts/performance/phase3-local-driver.json
-.\.venv\Scripts\python.exe -B benchmark_tts.py --quality-compare artifacts/performance/phase3-local-audio/control artifacts/performance/phase3-local-audio/8 --output artifacts/performance/phase3-local-quality.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 20 --fixtures short --silent-playback --output artifacts/performance/phase3-local-driver.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --quality-compare artifacts/performance/phase3-local-audio/control artifacts/performance/phase3-local-audio/8 --output artifacts/performance/phase3-local-quality.json
 
 # Normal app, optional production profiling. Close normally to print metrics.
 $env:CAPRI_LATENCY_METRICS = '1'
@@ -229,16 +229,16 @@ $env:CAPRI_LATENCY_METRICS = '1'
 Remove-Item Env:CAPRI_LATENCY_METRICS
 ```
 
-Use `--model qwen2.5:32b` with `benchmark_voice.py` to explicitly measure that conversational model; the report's auto replay did not silently replace it. Use `--recording path\question.wav` to compare exactly the same recorded PCM across settings. `--consecutive` exercises retained context. Run benchmarks serially and keep speaker/speed/options consistent.
+Use `--model qwen2.5:32b` with `benchmarks/benchmark_voice.py` to explicitly measure that conversational model; the report's auto replay did not silently replace it. Use `--recording path\question.wav` to compare exactly the same recorded PCM across settings. `--consecutive` exercises retained context. Run benchmarks serially and keep speaker/speed/options consistent.
 
 ### Optional Windows output/loopback validation
 
 1. In Audacity choose Windows WASAPI and the playback device's loopback recording input. Disable input monitoring, and start recording before the test. See [Audacity's desktop recording instructions](https://support.audacityteam.org/basics/recording-desktop-audio).
-2. Run `.\.venv\Scripts\python.exe -B benchmark_tts.py --samples 1 --fixtures medium --audio --loopback-marker --output artifacts/performance/phase3-loopback.json`. This explicitly plays speech and a short 1 kHz reference cue. Skip the first warm-up cue/reply when measuring.
+2. Run `.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_tts --samples 1 --fixtures medium --audio --loopback-marker --output artifacts/performance/phase3-loopback.json`. This explicitly plays speech and a short 1 kHz reference cue. Skip the first warm-up cue/reply when measuring.
 3. Measure from the measured trial's cue onset to speech onset in the loopback waveform. Subtract that trial's JSON `reference_dac_to_text_request_ms` to estimate text-request-to-recorded-output latency. The cue alignment itself uses a DAC estimate and is not perfect clock calibration.
 4. WASAPI loopback observes the digital output mix, **not sound arriving at your ears**. For acoustic validation record the cue and speaker with an external microphone/recorder instead. Check inter-chunk gaps, clicks, names, emotional rhythm and interruption/recovery while listening. Do not enable microphone monitoring near speakers.
 
-The existing `benchmark_voice.py --samples 20 --interrupt --audio` additionally measures driver abort return and recovery. That is not acoustic silence detection. No acoustic loopback, human listening comparison, actual League match/FPS test, or simultaneous resident Qwen32/vision GPU measurement was performed here.
+The existing `python -B -m benchmarks.benchmark_voice --samples 20 --interrupt --audio` additionally measures driver abort return and recovery. That is not acoustic silence detection. No acoustic loopback, human listening comparison, actual League match/FPS test, or simultaneous resident Qwen32/vision GPU measurement was performed here.
 
 ## Next bottleneck
 

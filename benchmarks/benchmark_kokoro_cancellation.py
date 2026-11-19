@@ -157,7 +157,7 @@ def trial(session,case,*,audio=False,probe=None,save=None):
 def stalled_worker(output):
     """Private fault injection; production worker and model assets are untouched."""
     path=output/"controlled_stall.py"
-    path.write_text("import sys,time\n"+f"sys.path.insert(0,{str(Path(__file__).resolve().parent)!r})\n"
+    path.write_text("import sys,time\n"+f"sys.path.insert(0,{str(Path(__file__).resolve().parents[1])!r})\n"
         +"from voice import kokoro_worker as worker\noriginal=worker.synthesize\n"
         +f"def stalled(engine,request,on_chunk=None):\n if request.get('text')=={OLD!r}:time.sleep(30)\n return original(engine,request,on_chunk)\n"
         +"worker.synthesize=stalled\nworker.main()\n",encoding="utf-8")

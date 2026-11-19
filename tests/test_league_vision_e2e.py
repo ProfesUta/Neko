@@ -71,7 +71,7 @@ def test_assistant_benchmark_cannot_claim_independent_human_review(setup,tmp_pat
 
 @pytest.mark.parametrize("options",[["--mode","window"],["--eligibility","synthetic"]])
 def test_assistant_review_cli_cannot_activate_captured_or_synthetic_modes(options):
-    import benchmark_league_vision_e2e as cli
+    from benchmarks import benchmark_league_vision_e2e as cli
     with pytest.raises(SystemExit):cli.main(["run","--assistant-reviewed",*options])
 
 
@@ -215,13 +215,13 @@ def test_csv_only_numeric_timing_and_identifiers_no_private_pixels_or_speech(tmp
 
 
 def test_cli_cannot_silently_start_loopback_without_audio_or_unknown_scenario():
-    import benchmark_league_vision_e2e as cli
+    from benchmarks import benchmark_league_vision_e2e as cli
     for argv in (["run","--loopback"],["run","--scenarios","live-game"],["run","--trials","0"]):
         with pytest.raises(SystemExit):cli.main(argv)
 
 
 def test_detection_only_metadata_survives_absent_audio_hardware(monkeypatch):
-    from benchmark_league_vision_e2e import output_metadata
+    from benchmarks.benchmark_league_vision_e2e import output_metadata
     def unavailable(sd):raise ValueError("No output")
     monkeypatch.setattr("voice.playback._output_options",unavailable)
     assert "output_unavailable" in output_metadata(SimpleNamespace(PortAudioError=RuntimeError))

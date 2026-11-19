@@ -107,7 +107,7 @@ No administrator launch is required by the application. The coding tool's isolat
 To repeat the finite silent capture measurement, close Neko first so that the benchmark is the sole League producer:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_live.py --seconds 60 --output artifacts\phase7\my-live-run-01
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_live --seconds 60 --output artifacts\phase7\my-live-run-01
 ```
 
 Use a fresh output directory. Add `--snapshot` only when explicitly choosing to save a local minimap crop. Keep the game foreground and unobstructed throughout; zero captured frames is a blocked/invalid capture run, not a performance sample.
@@ -119,7 +119,7 @@ Finish the active League session first. Open Ctrl+Shift+V, select a local record
 To create your own human-reviewed whitelist with the existing tool:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py calibrate --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --manifest data\league-vision\e2e-eligibility.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e calibrate --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\calibration.json --manifest data\league-vision\e2e-eligibility.json
 ```
 
 Mark actual named lane regions, label verified visible intervals, select the relevant label rows and export eligibility. For attached Yuumi, use verified lane regions or independently visible player evidence; never derive her independent position from Caitlyn's portrait. The workflow writes `e2e-eligibility-calibration.json` alongside the manifest. Select those exported files in the panel and explicitly enable the spoken test.
@@ -133,7 +133,7 @@ Existing assistant-reviewed evidence can be used only with the separate explicit
 The UI test is not a calibrated loopback benchmark. For device measurements use the existing Phase 6.2 tool, outside an active match, with other audio paused and matching reviewed files:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_league_vision_e2e.py run --mode replay --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\phase6_4-assistant-review\audio-calibration.json --manifest data\league-vision\phase6_4-assistant-review\audio-eligibility.json --assistant-reviewed --scenarios verified --audio --loopback --trials 20 --output artifacts\phase7\my-reviewed-audio-01
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league_vision_e2e run --mode replay --video tests\fixtures\league_real_gameplay.mp4 --calibration data\league-vision\phase6_4-assistant-review\audio-calibration.json --manifest data\league-vision\phase6_4-assistant-review\audio-eligibility.json --assistant-reviewed --scenarios verified --audio --loopback --trials 20 --output artifacts\phase7\my-reviewed-audio-01
 ```
 
 That command measures recorded evidence through real Kokoro/output, not live game accuracy. Software DAC estimates, digital loopback onset and physical audible output remain distinct. No Phase 7 real-device speech result is claimed; the current Practice Tool was kept silent throughout.
@@ -151,7 +151,7 @@ That command measures recorded evidence through real Kokoro/output, not live gam
 | `gui/league_vision.py` | Existing worker/service lifecycle, current-roster refresh, silent/recorded routing, bounded metrics and epoch-safe cleanup. |
 | `gui/league_vision_panel.py` (new) | On-demand aggregate diagnostics, Start/Stop and explicit recorded-test controls; no new timer. |
 | `gui/controls.py`, `gui/window.py` | Controls/shortcut, queued notification integration, shared status refresh and screen-tip suppression during observation. |
-| `benchmark_league_live.py` (new) | Finite actual capture benchmark with optional, correlated local snapshot. |
+| `benchmarks/benchmark_league_live.py` (new) | Finite actual capture benchmark with optional, correlated local snapshot. |
 | `tests/conftest.py` | Isolate external mode configuration from tests. |
 | `tests/test_league_live.py` (new) | Current roster, permissions, actual replay/CV lifecycle, mode/session changes, UI, overlay/PID checks and restarted frame sequences. |
 | `tests/test_league_visual.py` | Adapt capture fakes to explicit source identity and new permission semantics. |

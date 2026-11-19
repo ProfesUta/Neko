@@ -1,4 +1,4 @@
-"""Run: python -B benchmark_league.py [--live] [--seconds 5] [--output report.json]
+"""Run: python -B -m benchmarks.benchmark_league [--live] [--seconds 5] [--output report.json]
 
 Default: a labelled synthetic API exposure/polling experiment at 250/500ms,
 plus local LCU parsing, HTTP/JSON/dedup and direct-answer microbenchmarks.
@@ -245,7 +245,7 @@ def replay_microbench():
 def baseline_module(revision,name,clock=None):
     import re,subprocess,sys,types
     if not re.fullmatch(r"[0-9a-fA-F]{8,64}",revision):raise ValueError("Use a pinned hexadecimal baseline commit")
-    source=subprocess.check_output(["git","show",f"{revision}:core/{name}.py"],cwd=Path(__file__).parent)
+    source=subprocess.check_output(["git","show",f"{revision}:core/{name}.py"],cwd=Path(__file__).resolve().parents[1])
     module=types.ModuleType("_capri_benchmark_baseline_"+name)
     sys.modules[module.__name__]=module
     exec(compile(source,f"{revision}:core/{name}.py","exec"),module.__dict__)

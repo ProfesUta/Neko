@@ -232,7 +232,7 @@ def replay(text, mode, output, audio=False, probe=None, capture=None):
 def run(output, samples=20, audio=False, loopback=False, trace=False, recognize=False, endpoint=None,
         modes=("full", "native", "conversation"), selected=None, loopback_threshold=.001):
     from benchmarks.wasapi_loopback import LoopbackProbe
-    from benchmark_playback import distribution
+    from benchmarks.benchmark_playback import distribution
     output.mkdir(parents=True, exist_ok=True)
     capture = MixCapture() if loopback else None
     results, private = [], []

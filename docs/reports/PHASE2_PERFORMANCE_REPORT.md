@@ -83,7 +83,7 @@ An early unconditional cancellation-drain prototype delayed ongoing-generation c
 | `voice/kokoro_worker.py` | Forward native final-chunk status; synthesis text, samples, speaker and speed unchanged |
 | `voice/tts.py` | Distinguish decoded PCM from generated WAV readiness |
 | `voice/playback.py` | Record buffer submission and driver abort separately from DAC presentation |
-| `benchmark_voice.py` | Paired decoder replay, corpus/pause tests, consecutive turns, desktop/League UI, real-model contention/follow-ups, optional playback/abort probes |
+| `benchmarks/benchmark_voice.py` | Paired decoder replay, corpus/pause tests, consecutive turns, desktop/League UI, real-model contention/follow-ups, optional playback/abort probes |
 | `tests/test_voice_phase2.py` | New timing, decoder, completion-race, signal-order, muting, scheduler, benchmark isolation and cleanup tests |
 | `PHASE2_PERFORMANCE_REPORT.md` | This report |
 | `PERFORMANCE_REPORT.md` | Link to current Phase 2 results; earlier measurements retained as history |
@@ -109,27 +109,27 @@ Run isolated benchmarks with Capri closed, one command at a time, from `F:\Neko`
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
 
 # Paired recognition and complete silent voice path: 20 samples per setting.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --compare-stt --profile --output artifacts/performance/local_paired.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --compare-stt --profile --output artifacts/performance/local_paired.json
 
 # Varied recognition and retained conversation history.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --stt-corpus --output artifacts/performance/local_stt.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --consecutive --profile --output artifacts/performance/local_consecutive.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --stt-corpus --output artifacts/performance/local_stt.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --consecutive --profile --output artifacts/performance/local_consecutive.json
 
 # Same voice path, same mock League question, both UI modes.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --league-fixture --desktop-ui --profile --output artifacts/performance/local_desktop.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --league-fixture --companion --profile --output artifacts/performance/local_companion.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --league-fixture --desktop-ui --profile --output artifacts/performance/local_desktop.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --league-fixture --companion --profile --output artifacts/performance/local_companion.json
 
 # Real GPU contention and paced follow-up policy comparison; generated images only.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --contention --output artifacts/performance/local_contention.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --followups --output artifacts/performance/local_followups.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --contention --output artifacts/performance/local_contention.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --followups --output artifacts/performance/local_followups.json
 
 # Cancellation race control and optimized case, no speakers.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --interrupt --cancel-drain-ms 0 --output artifacts/performance/local_cancel_zero.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --interrupt --output artifacts/performance/local_cancel.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --interrupt --cancel-drain-ms 0 --output artifacts/performance/local_cancel_zero.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --interrupt --output artifacts/performance/local_cancel.json
 
 # Explicit installed 32B: first-token test, then an optional full complex voice replay.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --ollama --model qwen2.5:32b --first-text-only --question "Explain how Bayesian updating handles conflicting evidence, using a concrete example." --output artifacts/performance/local_32b_ttft.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --model qwen2.5:32b --question "Explain how Bayesian updating handles conflicting evidence, using a concrete example." --profile --output artifacts/performance/local_32b_voice.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --ollama --model qwen2.5:32b --first-text-only --question "Explain how Bayesian updating handles conflicting evidence, using a concrete example." --output artifacts/performance/local_32b_ttft.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --model qwen2.5:32b --question "Explain how Bayesian updating handles conflicting evidence, using a concrete example." --profile --output artifacts/performance/local_32b_voice.json
 ```
 
 The first model request is cold only if `/api/ps` showed it absent. Residency is saved in the JSON. To create an explicit cold trial, stop the chosen model with `ollama stop qwen2.5:32b` while Capri is closed, then run the test; subsequent samples measure warm requests. Full 32B voice replay can be substantially slower than TTFT-only probes and was not run here.
@@ -137,12 +137,12 @@ The first model request is cold only if `/api/ps` showed it absent. Residency is
 Explicit speaker-output and driver-abort measurements:
 
 ```powershell
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --audio --profile --output artifacts/performance/local_device_voice.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --interrupt --audio --output artifacts/performance/local_device_abort.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --audio --profile --output artifacts/performance/local_device_voice.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --interrupt --audio --output artifacts/performance/local_device_abort.json
 
 # Supply a representative 16-bit PCM WAV with natural pauses; no microphone is opened.
-.\.venv\Scripts\python.exe -B benchmark_voice.py --samples 20 --replay --compare-stt --recording .\voice-pause-fixture.wav --profile --output artifacts/performance/local_recording.json
-.\.venv\Scripts\python.exe -B benchmark_voice.py --vad-sweep --recording .\voice-pause-fixture.wav --output artifacts/performance/local_pauses.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --samples 20 --replay --compare-stt --recording .\voice-pause-fixture.wav --profile --output artifacts/performance/local_recording.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_voice --vad-sweep --recording .\voice-pause-fixture.wav --output artifacts/performance/local_pauses.json
 ```
 
 For real League matches, input devices and background vision ON/OFF, collect at least 20 turns in separate normal application sessions, then exit normally to print aggregates:

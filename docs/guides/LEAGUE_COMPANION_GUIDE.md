@@ -120,13 +120,13 @@ No genuine recorded gameplay was supplied for this implementation. Real minimap 
 
 ## Measurements and validation commands
 
-The benchmark extends the existing `benchmark_league.py`:
+The benchmark extends the existing `benchmarks/benchmark_league.py`:
 
 ```powershell
 .\.venv\Scripts\python.exe -B -m pytest -q -p no:cacheprovider
-.\.venv\Scripts\python.exe -B benchmark_league.py --seconds 1 --companion --replay --output artifacts/league-companion/local.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --seconds 1 --companion --replay --output artifacts/league-companion/local.json
 # Optional existing read-only live API probe; no audio or game input:
-.\.venv\Scripts\python.exe -B benchmark_league.py --live --seconds 5 --output artifacts/league-companion/live.json
+.\.venv\Scripts\python.exe -B -m benchmarks.benchmark_league --live --seconds 5 --output artifacts/league-companion/live.json
 ```
 
 Real local Python/OpenCV processing, with **synthetic API/reference/image fixtures** and no active League match, LLM or audio:
@@ -164,7 +164,7 @@ Raw benchmark records: ignored `artifacts/league-companion/before.json`, `final.
 | `requirements-replay.txt` | Optional headless OpenCV dependency |
 | `examples/league-replay-calibration.json` | Illustrative schema, not a ready calibration |
 | `tests/test_league_knowledge.py`, `tests/test_league_replay.py`, `tests/conftest.py` | Mocked/API/cache/geometry/video/concurrency/priority/shutdown coverage and isolation |
-| `benchmark_league.py` | Extend existing measurements with explicit new routes and offline detector |
+| `benchmarks/benchmark_league.py` | Extend existing measurements with explicit new routes and offline detector |
 | `LEAGUE_COMPANION_GUIDE.md` | Usage, measurements, limitations and policy boundary |
 | `THIRD_PARTY_NOTICES.md` | Expanded static-data attribution and optional OpenCV notice |
 
@@ -176,4 +176,4 @@ An offscreen real-window construction/show/close check also passed with preloads
 
 `git diff --check` passed (Git printed only normal LF/CRLF conversion notices). Voice modules, voice assets, champion pronunciation, League SVGs, teleport renderer and inference-priority implementation were not changed. No actual live-match FPS, microphone/audio-output latency or real gameplay/replay recording measurement was available for this task; the existing hardware performance reports are not relabelled as new measurements.
 
-Phase 6 now adds the local crop/review/label editor, expanded cached template matching and an approval-gated runtime. See [PHASE6_LEAGUE_VISION_REPORT.md](PHASE6_LEAGUE_VISION_REPORT.md) for calibration, validation commands, measured synthetic results and remaining real-footage work. Open the editor with Ctrl+Shift+L. Competitive live capture/alerts stay disabled by default; no approval or real-match accuracy is claimed.
+Phase 6 now adds the local crop/review/label editor, expanded cached template matching and an approval-gated runtime. See [PHASE6_LEAGUE_VISION_REPORT.md](../reports/PHASE6_LEAGUE_VISION_REPORT.md) for calibration, validation commands, measured synthetic results and remaining real-footage work. Open the editor with Ctrl+Shift+L. Competitive live capture/alerts stay disabled by default; no approval or real-match accuracy is claimed.

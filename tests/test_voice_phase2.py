@@ -253,7 +253,7 @@ def test_output_abort_metric_fires_only_after_driver_abort_returns():
 
 
 def test_recording_loader_preserves_stereo_average_and_rejects_other_encodings(tmp_path):
-    from benchmark_voice import read_recording
+    from benchmarks.benchmark_voice import read_recording
     path = tmp_path / "fixture.wav"
     with wave.open(str(path), "wb") as output:
         output.setparams((2, 2, 16000, 0, "NONE", "not compressed"))
@@ -269,7 +269,7 @@ def test_recording_loader_preserves_stereo_average_and_rejects_other_encodings(t
 @pytest.mark.parametrize("companion", [False, True])
 @pytest.mark.parametrize("warmups", [0, 1])
 def test_league_replay_harness_needs_no_ollama_audio_device_or_live_client(qapp, monkeypatch, companion, warmups):
-    import benchmark_voice
+    from benchmarks import benchmark_voice
     import gui.window as gui
     from core import conversation
     from voice import tts

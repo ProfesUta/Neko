@@ -227,7 +227,7 @@ def test_visual_stage_timing_uses_numeric_monotonic_marks_only():
 
 
 def test_baseline_benchmark_requires_a_pinned_commit_before_running_git(monkeypatch):
-    from benchmark_league import baseline_module
+    from benchmarks.benchmark_league import baseline_module
     monkeypatch.setattr("subprocess.check_output",lambda *a,**k:pytest.fail("Unvalidated revision"))
     with pytest.raises(ValueError):baseline_module("HEAD; anything","league_visual")
 
